@@ -1,0 +1,23 @@
+{
+  "root_dir": "/home/user/tftp",
+  "log_file": "/home/user/tftpd.log",
+  "transfer_log_file": "/home/user/tftpgui/transfers.csv",
+  "audit_log_file": "/home/user/tftpgui/audit.jsonl",
+  "allowlist_ips": ["192.168.0.0/24", "10.200.50.0/24"],
+  "host": "0.0.0.0",
+  "port": 69,
+  "allow_write": false,
+  "writable_subdirs": [],
+  "enforce_chroot": false,
+  "filename_allowlist": [],
+  "timeout_sec": 3.0,
+  "max_retries": 5,
+  "log_level": "INFO",
+  "log_rotation": "size",
+  "log_max_bytes": 5000000,
+  "log_backup_count": 5,
+  "log_when": "midnight",
+  "log_interval": 1,
+  "metrics_window_sec": 5,
+  "ephemeral_ports": true
+}
