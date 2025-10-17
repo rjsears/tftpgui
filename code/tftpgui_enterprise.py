@@ -948,6 +948,8 @@ class TextHandler(logging.Handler):
 
 
 class TFTPApp(tk.Tk):  # type: ignore
+    """Tkinter GUI application for configuring and running the TFTP server."""
+
     def __init__(self, cfg: ServerConfig):
         super().__init__()
         self.title(f"TFTP Server Python3 -- Version {VERSION} {__author__}")
@@ -955,6 +957,8 @@ class TFTPApp(tk.Tk):  # type: ignore
         self.cfg = cfg
         self._closing = False
         self._poll_after_id: Optional[str] = None
+
+        self._build_menubar()
 
         self.logger = logging.getLogger("tftpgui")
         self.logger.setLevel(getattr(logging, cfg.log_level.upper(), logging.INFO))
@@ -1001,6 +1005,37 @@ class TFTPApp(tk.Tk):  # type: ignore
                 root_logger.addHandler(fhandler)
             except Exception as exc:
                 print(f"Logging: failed to attach file logger: {exc}")
+
+    def _build_menubar(self) -> None:
+        """Create the application menubar with File and Help menus."""
+        menubar = tk.Menu(self)
+
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="Reload Config", command=self._load_config_file)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.on_close)
+        menubar.add_cascade(label="File", menu=file_menu)
+
+        help_menu = tk.Menu(menubar, tearoff=0)
+        help_menu.add_command(label="About…", command=self._show_about)
+        menubar.add_cascade(label="Help", menu=help_menu)
+
+        self.config(menu=menubar)
+
+    def _show_about(self) -> None:
+        """Display version/author information."""
+        try:
+            messagebox.showinfo(
+                "About TFTP Server",
+                (
+                    "TFTP Server Python3\n\n"
+                    f"Version: {VERSION}\n"
+                    f"Author: {__author__}\n\n"
+                    "https://github.com/rjsears/tftpgui"
+                ),
+            )
+        except Exception:
+            print(f"TFTP Server Python3 - Version {VERSION} - Author: {__author__}")
 
     def _build_widgets(self) -> None:
         pad = {"padx": 6, "pady": 6}
@@ -1146,16 +1181,13 @@ class TFTPApp(tk.Tk):  # type: ignore
     def _schedule_poll(self) -> None:
         if self._closing:
             return
-        # Poll events every 200ms
         self._poll_after_id = self.after(200, self._poll_queue)
 
     def _poll_queue(self) -> None:
         try:
-            processed = False
             while True:
                 evt = self.event_q.get_nowait()
                 self._process_event(evt)
-                processed = True
         except queue.Empty:
             pass
         finally:
