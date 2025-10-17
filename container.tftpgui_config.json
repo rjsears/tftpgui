@@ -1,0 +1,30 @@
+{
+  "host": "0.0.0.0",
+  "port": 69,
+  "root_dir": "/data",
+
+  "allow_write": true,
+  "writable_subdirs": ["uploads", "staging"],
+  "enforce_chroot": false,
+
+  "filename_allowlist": [".bin", ".cfg", ".hex"],
+  "allowlist_ips": ["192.168.0.0/24", "10.200.50.0/24"],
+  "denylist_ips": [],
+
+  "timeout_sec": 3.0,
+  "max_retries": 5,
+  "log_level": "INFO",
+
+  "log_file": "/logs/tftpgui.log",
+  "audit_log_file": "/logs/audit.jsonl",
+  "transfer_log_file": "/logs/transfers.csv",
+
+  "metrics_window_sec": 5,
+  "ephemeral_ports": true,
+
+  "log_rotation": "size",
+  "log_max_bytes": 5000000,
+  "log_backup_count": 5,
+  "log_when": "midnight",
+  "log_interval": 1
+}
