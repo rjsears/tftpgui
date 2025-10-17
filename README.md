@@ -88,23 +88,36 @@ The script checks for it in this order:
 
 ```json
 {
-  "root_dir": "/home/username/tftp",
+  "host": "0.0.0.0",
+  "port": 69,
+  "root_dir": "/tftp",
+
   "allow_write": true,
   "writable_subdirs": ["uploads", "staging"],
   "enforce_chroot": false,
+
   "filename_allowlist": [".bin", ".cfg", ".hex"],
   "allowlist_ips": ["192.168.0.0/24", "10.200.50.0/24"],
-  "denylist_ips": ["0.0.0.0/8"],
-  "log_file": "/home/username/tftpd.log",
-  "audit_log_file": "/var/log/tftpgui/audit.jsonl",
+  "denylist_ips": [],
+
+  "timeout_sec": 3.0,
+  "max_retries": 5,
+  "log_level": "INFO",
+
+  "log_file": "/logs/tftpgui/tftpgui.log",
+  "audit_log_file": "/logs/tftpgui/audit.jsonl",
+  "transfer_log_file": "/logs/tftpgui/transfers.csv",
+
   "metrics_window_sec": 5,
   "ephemeral_ports": true,
+
   "log_rotation": "size",
   "log_max_bytes": 5000000,
   "log_backup_count": 5,
   "log_when": "midnight",
   "log_interval": 1
 }
+
 ```
 
 You can override the config file on launch:
@@ -145,6 +158,123 @@ Logs and audit events will print to stdout and your configured log files.
 
 ---
 
+## Docker Support
+
+You don’t have to run TFTPGui directly on your host — it can also run inside a Docker container.  
+The container is built to run in **headless mode** (no GUI), perfect for lab servers and appliances.
+
+### Pull the image
+
+```bash
+docker pull rjsears/tftpgui:1.0.0
+````
+
+Or always grab the newest build:
+
+```bash
+docker pull rjsears/tftpgui:latest
+```
+
+---
+
+### Quick run with host networking (Linux only)
+
+```bash
+docker run --rm -it --network host \
+  -v /home/tftpd/tftp:/data \
+  -v /home/tftpd/.tftpgui_config.json:/app/.tftpgui_config.json:ro \
+  rjsears/tftpgui:1.0.0 -c /app/.tftpgui_config.json
+```
+
+This uses your host’s network stack directly, so you don’t have to map UDP ports.
+
+---
+
+### Run with bridged networking (portable)
+
+```bash
+docker run --rm -it \
+  -p 69:69/udp \
+  -p 50000-50100:50000-50100/udp \
+  -v /home/tftpd/tftp:/data \
+  -v /home/tftpd/.tftpgui_config.json:/app/.tftpgui_config.json:ro \
+  rjsears/tftpgui:1.0.0 -c /app/.tftpgui_config.json
+```
+
+This maps **UDP port 69** and an ephemeral range (`50000–50100`) that the server uses for data transfers.
+Adjust the range in both your config and command if you need more concurrent sessions.
+
+---
+
+### docker-compose example
+
+```yaml
+services:
+  tftpgui:
+    image: rjsears/tftpgui:1.0.0
+    container_name: tftpgui
+    restart: unless-stopped
+    cap_add:
+      - NET_BIND_SERVICE
+    network_mode: host   # easiest option (Linux only)
+    volumes:
+      - /home/tftpd/tftp:/data:rw
+      - /home/tftpd/.tftpgui_config.json:/app/.tftpgui_config.json:ro
+      - /home/tftpd/tftpgui/logs:/logs
+    command: ["-c", "/app/.tftpgui_config.json"]
+```
+
+If you prefer port mappings instead of host networking, remove `network_mode: host` and add `ports:` for `69/udp` and your ephemeral range.
+
+---
+
+### Container config file
+
+Inside the container, the root directory is `/data` and logs are in `/logs`.
+Here’s an example `container.tftpgui_config.json` you can mount:
+
+```json
+{
+  "host": "0.0.0.0",
+  "port": 69,
+  "root_dir": "/data",
+
+  "allow_write": true,
+  "writable_subdirs": ["uploads", "staging"],
+  "enforce_chroot": false,
+
+  "filename_allowlist": [".bin", ".cfg", ".hex"],
+  "allowlist_ips": ["192.168.0.0/24", "10.200.50.0/24"],
+  "denylist_ips": [],
+
+  "timeout_sec": 3.0,
+  "max_retries": 5,
+  "log_level": "INFO",
+
+  "log_file": "/logs/tftpgui.log",
+  "audit_log_file": "/logs/audit.jsonl",
+  "transfer_log_file": "/logs/transfers.csv",
+
+  "metrics_window_sec": 5,
+  "ephemeral_ports": true,
+
+  "log_rotation": "size",
+  "log_max_bytes": 5000000,
+  "log_backup_count": 5,
+  "log_when": "midnight",
+  "log_interval": 1
+}
+```
+
+---
+
+### Notes
+
+* GUI mode isn’t supported inside Docker — use headless mode.
+* Host networking is simplest for Linux deployments; bridged networking works anywhere, but you must map UDP ports correctly.
+* Make sure mounted volumes (`/data`, `/logs`) are writable by the container user.
+
+
 ## GUI Overview (Screenshots Coming Soon)
 
 ### Main Window
@@ -174,34 +304,6 @@ Editable fields for:
 * Rotation
 * Write permissions
 * Timeouts
-
----
-
-## Docker Support (Coming Soon)
-
-A Docker image will be published to Docker Hub under:
-
-```
-rjsears/tftpgui
-```
-
-Once live, you’ll be able to run:
-
-```bash
-docker pull rjsears/tftpgui:1.0.0
-```
-
-Then:
-
-```bash
-docker run -it --rm \
-  -p 69:69/udp \
-  -v /home/crypto/tftp:/tftp-root \
-  -v /home/crypto/.tftpgui_config.json:/app/.tftpgui_config.json \
-  rjsears/tftpgui:1.0.0
-```
-
-Until then, the Dockerfile and image setup will remain in progress.
 
 ---
 
