@@ -1,0 +1,44 @@
+# docker-compose.yml
+#
+# Two service definitions:
+# - tftpgui_host: simplest networking (Linux only), uses host's UDP stack
+# - tftpgui_bridged: portable, explicit UDP port mappings; add CAP_NET_BIND_SERVICE if binding <1024
+
+services:
+  # -------- OPTION A: Host networking (Linux only) --------
+  tftpgui_host:
+    image: rjsears/tftpgui:1.0.0
+    container_name: tftpgui_host
+    build:
+      context: .
+      dockerfile: Dockerfile
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - /home/tftpd/tftp:/data:rw
+      - /home/tftpd/tftpgui/container.tftpgui_config.json:/app/.tftpgui_config.json:ro
+      - /home/tftpd/tftpgui/logs:/logs
+    command: ["-c", "/app/.tftpgui_config.json"]
+    # No ports section needed on host network
+    # GUI not available in container; this runs headless
+
+  # -------- OPTION B: Bridged network with explicit UDP ports --------
+  tftpgui_bridged:
+    image: rjsears/tftpgui:1.0.0
+    container_name: tftpgui_bridged
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    cap_add:
+      - NET_BIND_SERVICE   # allows binding to UDP 69 as non-root
+    ports:
+      - "69:69/udp"
+      # Map a small ephemeral UDP range for the per-transfer sockets.
+      # Adjust to match your config/logs & traffic volume.
+      - "50000-50100:50000-50100/udp"
+    volumes:
+      - /home/tftpd/tftp:/data:rw
+      - /home/tftpd/tftpgui/container.tftpgui_config.json:/app/.tftpgui_config.json:ro
+      - /home/tftpd/tftpgui/logs:/logs
+    command: ["-c", "/app/.tftpgui_config.json"]
