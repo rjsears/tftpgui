@@ -6,7 +6,7 @@ from __future__ import annotations
 
 ## TFTP Gui
 __author__ = 'Richard J. Sears'
-VERSION = "1.0.0 (2025-10-17)"
+VERSION = "1.0.1 (2025-10-17)"
 
 ## Graphical TFTP Server for use on *Nix systems
 
@@ -946,8 +946,14 @@ class TextHandler(logging.Handler):
         except Exception:
             return
 
+# --- Headless-safe Tk base selection ---
+if tk is None:
+    class _TkBase:  # minimal base when Tkinter is unavailable (e.g., in Docker)
+        pass
+else:
+    _TkBase = tk.Tk
 
-class TFTPApp(tk.Tk):  # type: ignore
+class TFTPApp(_TkBase):  # type: ignore
     """Tkinter GUI application for configuring and running the TFTP server."""
 
     def __init__(self, cfg: ServerConfig):
