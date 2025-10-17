@@ -934,11 +934,11 @@ class TextHandler(logging.Handler):
         super().__init__()
         self.widget = widget
 
-    def emit(self, record: logging.LogRecord) -> None:
+    def emit(self, self_record: logging.LogRecord) -> None:
         try:
             if not self.widget or not self.widget.winfo_exists():
                 return
-            msg = self.format(record)
+            msg = self.format(self_record)
             self.widget.configure(state="normal")
             self.widget.insert("end", msg + "\n")
             self.widget.configure(state="disabled")
@@ -1040,11 +1040,9 @@ class TFTPApp(tk.Tk):  # type: ignore
     def _build_widgets(self) -> None:
         pad = {"padx": 6, "pady": 6}
 
-        self.banner = tk.StringVar(value="")
-        banner_lbl = ttk.Label(self, textvariable=self.banner, style="Banner.TLabel", anchor="center")
-        banner_lbl.pack(fill="x")
-        style = ttk.Style(self)
-        style.configure("Banner.TLabel", background="#ffe9cc", foreground="#8a4b00", padding=8, font=("TkDefaultFont", 10, "bold"))
+        # Colored status banner (Option A palette)
+        self.banner_label = tk.Label(self, text="Server stopped", fg="white", bg="darkred", anchor="center")
+        self.banner_label.pack(fill="x")
 
         frm = ttk.Frame(self)
         frm.pack(fill="x", **pad)
@@ -1178,6 +1176,26 @@ class TFTPApp(tk.Tk):  # type: ignore
         self.columnconfigure(0, weight=1)
         self._rows: Dict[Tuple[str, int, str, bool], str] = {}
 
+    # ------- Banner helpers (Option A palette) -------
+    def _set_banner(self, text: str, bg: str) -> None:
+        """Update the banner with given text and background color."""
+        try:
+            self.banner_label.config(text=text, bg=bg)
+        except Exception:
+            pass
+
+    def _update_banner(self) -> None:
+        """Refresh banner based on server state and config validity."""
+        try:
+            validate_root_dir(self.cfg)
+            if self.running:
+                self._set_banner(f"Server running on {self.cfg.host}:{self.cfg.port}", "green")
+            else:
+                self._set_banner("Server stopped", "darkred")
+        except Exception as exc:
+            self._set_banner(f"Config error: {exc}", "orange")
+
+    # ------- Polling / event processing -------
     def _schedule_poll(self) -> None:
         if self._closing:
             return
@@ -1227,6 +1245,7 @@ class TFTPApp(tk.Tk):  # type: ignore
             for idx, val in enumerate(values):
                 self.tree.set(iid, self.tree["columns"][idx], val)
 
+    # ------- Window actions -------
     def on_close(self) -> None:
         self._closing = True
         try:
@@ -1243,6 +1262,7 @@ class TFTPApp(tk.Tk):  # type: ignore
         except Exception:
             pass
 
+    # ------- UI helpers -------
     def _open_config(self) -> None:
         try:
             messagebox.showinfo("Config File", f"Edit this file and set a valid 'root_dir':\n\n{self.cfg.config_file}")
@@ -1254,9 +1274,11 @@ class TFTPApp(tk.Tk):  # type: ignore
         if path:
             self.logfile_var.set(path)
 
+    # ------- Server controls -------
     def start_server(self) -> None:
         try:
             self._load_config_file()
+            self._set_banner("Starting server…", "blue")
             validate_root_dir(self.cfg)
 
             host = self.host_var.get().strip() or "0.0.0.0"
@@ -1288,7 +1310,6 @@ class TFTPApp(tk.Tk):  # type: ignore
             self.server_thread.start()
             self.running = True
             self.status.set(f"Running on {self.cfg.host}:{self.cfg.port} — Root: {self.cfg.root_dir}")
-            self._update_buttons()
         except Exception as exc:
             try:
                 messagebox.showerror("Start Failed", str(exc))
@@ -1306,6 +1327,7 @@ class TFTPApp(tk.Tk):  # type: ignore
         except Exception as exc:
             print(f"Stop Failed: {exc}")
         finally:
+            self._update_banner()
             self._update_buttons()
 
     def _update_buttons(self) -> None:
@@ -1327,13 +1349,6 @@ class TFTPApp(tk.Tk):  # type: ignore
                 self.stop_btn.config(state="disabled")
         except Exception:
             pass
-
-    def _update_banner(self) -> None:
-        try:
-            validate_root_dir(self.cfg)
-            self.banner.set("")
-        except Exception as exc:
-            self.banner.set(f"Set 'root_dir' in {self.cfg.config_file} to an existing folder, then click Reload Config. ({exc})")
 
     def _load_config_file(self) -> None:
         try:
@@ -1366,9 +1381,14 @@ class TFTPApp(tk.Tk):  # type: ignore
             self.ephemeral_var.set(self.cfg.ephemeral_ports)
         except Exception as exc:
             self.logger.warning("Failed to load config: %s", exc)
+        finally:
+            self._update_banner()
+            self._update_buttons()
 
     def _save_config_file(self) -> None:
+        """Persist current GUI fields back to the JSON config on disk."""
         try:
+            # Values editable from the GUI
             self.cfg.host = self.host_var.get().strip() or "0.0.0.0"
             self.cfg.port = int(self.port_var.get())
             self.cfg.allow_write = bool(self.write_var.get())
@@ -1379,25 +1399,38 @@ class TFTPApp(tk.Tk):  # type: ignore
             self.cfg.denylist_ips = [s.strip() for s in self.deny_ips_var.get().split(",") if s.strip()]
             self.cfg.timeout_sec = float(self.timeout_var.get())
             self.cfg.max_retries = int(self.retries_var.get())
+
             lf = self.logfile_var.get().strip() or None
             self.cfg.log_file = Path(lf) if lf else None
-            self.cfg.transfer_log_file = Path(self.tlog_var.get().strip()) if self.tlog_var.get().strip() else None
+
+            tlf = self.tlog_var.get().strip() or None
+            self.cfg.transfer_log_file = Path(tlf) if tlf else None
+
             self.cfg.log_rotation = self.rotation_var.get().strip().lower() or "size"
             self.cfg.log_max_bytes = int(self.maxbytes_var.get())
             self.cfg.log_backup_count = int(self.backups_var.get())
             self.cfg.log_when = self.when_var.get().strip() or "midnight"
             self.cfg.log_interval = int(self.interval_var.get())
-            self.cfg.audit_log_file = Path(self.audit_var.get()) if self.audit_var.get().strip() else None
+
+            alf = self.audit_var.get().strip() or None
+            self.cfg.audit_log_file = Path(alf) if alf else None
+
             self.cfg.metrics_window_sec = int(self.window_var.get())
             self.cfg.ephemeral_ports = bool(self.ephemeral_var.get())
+
+            # NOTE: root_dir is intentionally edited in the JSON file, not via GUI field.
+            # Save to disk
+            from pathlib import Path as _Path  # ensure type
             save_config(self.cfg)
             try:
-                messagebox.showinfo("Saved", f"Config saved to {self.cfg.config_file}")
+                from tkinter import messagebox as _mb
+                _mb.showinfo("Saved", f"Config saved to {self.cfg.config_file}")
             except Exception:
                 print(f"Config saved to {self.cfg.config_file}")
         except Exception as exc:
             try:
-                messagebox.showerror("Save Failed", str(exc))
+                from tkinter import messagebox as _mb
+                _mb.showerror("Save Failed", str(exc))
             except Exception:
                 print(f"Save Failed: {exc}")
         finally:
