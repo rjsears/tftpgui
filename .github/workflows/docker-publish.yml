@@ -5,6 +5,7 @@ on:
     branches: [ "main" ]
     tags:
       - "v*.*.*"
+  workflow_dispatch:
 
 jobs:
   build-and-push:
@@ -26,8 +27,8 @@ jobs:
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}   # e.g., rjsears (or rjsears+robot if using a robot)
+          password: ${{ secrets.DOCKERHUB_TOKEN }}      # Docker Hub Access Token for that same user/robot
 
       - name: Extract version from Git ref
         id: vars
@@ -49,3 +50,48 @@ jobs:
           tags: |
             rjsears/tftpgui:latest
             rjsears/tftpgui:${{ steps.vars.outputs.version }}
+
+  sync-readme:
+    name: Sync Docker Hub Overview
+    runs-on: ubuntu-latest
+    needs: build-and-push   # only run if image push succeeded
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show README info (debug)
+        run: |
+          ls -l README.md || true
+          echo "Size (bytes): $(wc -c < README.md 2>/dev/null || echo 0)"
+
+      - name: Update Docker Hub description
+        id: hubdesc
+        uses: peter-evans/dockerhub-description@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}     # MUST match token owner (user or robot)
+          password: ${{ secrets.DOCKERHUB_TOKEN }}        # Docker Hub Access Token
+          repository: rjsears/tftpgui
+          short-description: Full-featured TFTP server (GUI & headless) with Docker support
+          readme-filepath: README.md                      # or README.DOCKERHUB.md if you keep a slim Hub copy
+
+      # Optional: verify immediately (adds clear signal in logs)
+      - name: Verify description updated (length & preview)
+        env:
+          DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -e
+          JWT=$(curl -s -H "Content-Type: application/json" \
+            -d "{\"username\":\"$DH_USER\",\"password\":\"$DH_TOKEN\"}" \
+            https://hub.docker.com/v2/users/login/ | python3 -c 'import sys,json; print(json.load(sys.stdin).get("token",""))')
+          if [ -z "$JWT" ]; then
+            echo "ERROR: No JWT (check DOCKERHUB_USERNAME/DOCKERHUB_TOKEN)"; exit 1
+          fi
+          curl -s -H "Authorization: JWT $JWT" "https://hub.docker.com/v2/repositories/rjsears/tftpgui/" \
+            | python3 - <<'PY'
+import sys, json
+data=json.load(sys.stdin)
+desc=data.get("full_description","")
+print("Desc length:", len(desc))
+print("Preview:", (desc[:200] + ("..." if len(desc)>200 else "")))
+PY
