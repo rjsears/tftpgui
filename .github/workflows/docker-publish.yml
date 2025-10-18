@@ -1,25 +1,20 @@
-name: Build, Push & Sync Docker Hub
+name: Build and Publish Docker Image
 
 on:
   push:
     branches: [ "main" ]
-  release:
-    types: [ "published" ]
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  packages: write
-
-env:
-  IMAGE_NAME: rjsears/tftpgui
+    tags:
+      - "v*.*.*"
 
 jobs:
   build-and-push:
-    name: Build & Push Image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up QEMU
@@ -31,64 +26,26 @@ jobs:
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}   # e.g., rjsears or rjsears+robot
-          password: ${{ secrets.DOCKERHUB_TOKEN }}      # Docker Hub Access Token for that same user/robot
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Extract version from Git ref
         id: vars
-        shell: bash
         run: |
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
           else
             VERSION="edge"
           fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
-      - name: Build & Push (multi-arch)
-        uses: docker/build-push-action@v5
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.version }}
-            ${{ env.IMAGE_NAME }}:latest
-
-  sync-readme:
-    name: Sync Docker Hub Overview
-    runs-on: ubuntu-latest
-    needs: build-and-push
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # Simple debug to confirm which Hub user your secrets authenticate as
-      - name: Docker Hub whoami (debug)
-        env:
-          DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
-          DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        shell: bash
-        run: |
-          set -e
-          echo "Attempting Hub login as: $DH_USER"
-          LOGIN_JSON=$(curl -s -H "Content-Type: application/json" \
-            -d "{\"username\":\"$DH_USER\",\"password\":\"$DH_TOKEN\"}" \
-            https://hub.docker.com/v2/users/login/)
-          JWT=$(echo "$LOGIN_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("token",""))')
-          if [ -z "$JWT" ]; then
-            echo "::error::Docker Hub login returned no token. Check DOCKERHUB_USERNAME/DOCKERHUB_TOKEN (must be a Docker Hub access token for that account)."
-            exit 1
-          fi
-          echo "Hub user: $(curl -s -H "Authorization: JWT $JWT" https://hub.docker.com/v2/user/)"
-
-      # Preferred: maintained action to sync README to Docker Hub Overview
-      - name: Update Docker Hub description
-        uses: peter-evans/dockerhub-description@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}     # MUST match token owner (user or robot)
-          password: ${{ secrets.DOCKERHUB_TOKEN }}        # Docker Hub Access Token
-          repository: ${{ env.IMAGE_NAME }}
-          short-description: "Full-featured TFTP server (GUI & headless) with Docker support"
-          readme-filepath: README.md
+            rjsears/tftpgui:latest
+            rjsears/tftpgui:${{ steps.vars.outputs.version }}
