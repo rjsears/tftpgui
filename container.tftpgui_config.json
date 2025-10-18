@@ -1,6 +1,8 @@
 {
   "host": "0.0.0.0",
-  "port": 69,
+  "port": 1069,
+  "transfer_port_min": 50000,
+  "transfer_port_max": 50100,
   "root_dir": "/data",
 
   "allow_write": true,
