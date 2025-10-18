@@ -176,7 +176,7 @@ The container is built to run in **headless mode** (no GUI), perfect for lab ser
 ### Pull the image
 
 ```bash
-docker pull rjsears/tftpgui:1.0.3
+docker pull rjsears/tftpgui:1.0.4
 ````
 
 Or always grab the newest build:
@@ -220,7 +220,7 @@ docker run --rm -it \
   -v /home/crypto/tftp:/data \
   -v /home/crypto/container.tftpgui_config.json:/app/.tftpgui_config.json:ro \
   -v /home/crypto/tftpgui/logs:/logs \
-  rjsears/tftpgui:1.0.3
+  rjsears/tftpgui:1.0.4
 ```
 
 This maps **UDP port 69** and an ephemeral range (`50000–50100`) that the server uses for data transfers.
@@ -239,7 +239,7 @@ services:
   # -------------------------------------------------------------
   tftpgui:
     # Use the published image, or uncomment "build" to build locally
-    image: rjsears/tftpgui:1.0.3
+    image: rjsears/tftpgui:1.0.4
     # build:
     #   context: .
     #   dockerfile: Dockerfile
@@ -274,7 +274,7 @@ services:
   # -------------------------------------------------------------
   tftpgui-host:
     # Use the same image
-    image: rjsears/tftpgui:1.0.3
+    image: rjsears/tftpgui:1.0.4
     # build:
     #   context: .
     #   dockerfile: Dockerfile
