@@ -10,10 +10,15 @@ LABEL org.opencontainers.image.title="tftpgui" \
       org.opencontainers.image.source="https://github.com/rjsears/tftpgui" \
       org.opencontainers.image.licenses="MIT"
 
-# System deps (no tk in container; headless only)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates tzdata iproute2 netcat-traditional \
-    && rm -rf /var/lib/apt/lists/*
+# System deps (headless) + grant python low-port bind capability
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates tzdata iproute2 netcat-traditional libcap2-bin; \
+    for py in /usr/local/bin/python /usr/local/bin/python3; do \
+        if [ -x "$py" ]; then setcap 'cap_net_bind_service=+ep' "$py" || true; fi; \
+    done; \
+    rm -rf /var/lib/apt/lists/*
 
 # App dirs
 WORKDIR /app
