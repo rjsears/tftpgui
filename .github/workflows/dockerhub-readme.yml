@@ -1,7 +1,7 @@
 name: Sync Docker Hub Overview
 on:
   push:
-    branches: [ main ]
+    branches: [ "main" ]
     paths: [ README.md ]   # or README.DOCKERHUB.md if you use a trimmed file
   release:
     types: [published]
