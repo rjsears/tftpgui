@@ -32,7 +32,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}   # e.g., rjsears or rjsears+robot
-          password: ${{ secrets.DOCKERHUB_TOKEN }}      # Access Token for that same user/robot
+          password: ${{ secrets.DOCKERHUB_TOKEN }}      # Docker Hub Access Token for that same user/robot
 
       - name: Extract version from Git ref
         id: vars
@@ -64,9 +64,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Debug: confirm which Hub user your secrets authenticate as
+      # Simple debug to confirm which Hub user your secrets authenticate as
       - name: Docker Hub whoami (debug)
-        id: whoami
         env:
           DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
           DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -77,24 +76,15 @@ jobs:
           LOGIN_JSON=$(curl -s -H "Content-Type: application/json" \
             -d "{\"username\":\"$DH_USER\",\"password\":\"$DH_TOKEN\"}" \
             https://hub.docker.com/v2/users/login/)
-          JWT=$(python3 - <<'PY'
-import sys, json
-try:
-    print(json.load(sys.stdin).get("token",""))
-except Exception:
-    print("")
-PY
-<<<"$LOGIN_JSON")
+          JWT=$(echo "$LOGIN_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("token",""))')
           if [ -z "$JWT" ]; then
             echo "::error::Docker Hub login returned no token. Check DOCKERHUB_USERNAME/DOCKERHUB_TOKEN (must be a Docker Hub access token for that account)."
             exit 1
           fi
           echo "Hub user: $(curl -s -H "Authorization: JWT $JWT" https://hub.docker.com/v2/user/)"
 
-      # Preferred: use the maintained action
-      - name: Update Docker Hub description (action)
-        id: hubdesc
-        continue-on-error: true
+      # Preferred: maintained action to sync README to Docker Hub Overview
+      - name: Update Docker Hub description
         uses: peter-evans/dockerhub-description@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}     # MUST match token owner (user or robot)
@@ -102,35 +92,3 @@ PY
           repository: ${{ env.IMAGE_NAME }}
           short-description: "Full-featured TFTP server (GUI & headless) with Docker support"
           readme-filepath: README.md
-
-      # Fallback: do a direct API PATCH if the action failed (e.g., Forbidden)
-      - name: Update Docker Hub Overview via API (fallback)
-        if: steps.hubdesc.outcome != 'success'
-        env:
-          DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
-          DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-          REPO: ${{ env.IMAGE_NAME }}
-        shell: bash
-        run: |
-          set -e
-          JWT=$(curl -s -H "Content-Type: application/json" \
-            -d "{\"username\":\"$DH_USER\",\"password\":\"$DH_TOKEN\"}" \
-            https://hub.docker.com/v2/users/login/ \
-            | python3 -c 'import sys,json; print(json.load(sys.stdin).get("token",""))')
-          if [ -z "$JWT" ]; then
-            echo "::error::Hub login failed in fallback step."
-            exit 1
-          fi
-          BODY=$(python3 - <<'PY'
-import io, json
-with io.open("README.md","r",encoding="utf-8") as f:
-    print(json.dumps({"full_description": f.read()}))
-PY
-)
-          CODE=$(curl -s -o /tmp/hub_resp.json -w "%{http_code}" \
-            -H "Authorization: JWT $JWT" \
-            -H "Content-Type: application/json" \
-            -X PATCH "https://hub.docker.com/v2/repositories/$REPO/" \
-            -d "$BODY")
-          echo "Hub PATCH HTTP $CODE"
-          test "$CODE" = "200" || { echo "::error::Docker Hub returned HTTP $CODE"; cat /tmp/hub_resp.json; exit 1; }
