@@ -6,7 +6,7 @@ from __future__ import annotations
 
 ## TFTP Gui
 __author__ = 'Richard J. Sears'
-VERSION = "1.0.3 (2025-10-18)"
+VERSION = "1.0.4 (2025-10-18)"
 
 ## Graphical TFTP Server for use on *Nix systems
 
@@ -16,6 +16,7 @@ VERSION = "1.0.3 (2025-10-18)"
 # Add function commenting
 # Add some system tests
 # Clean up some of the functions
+# Work on Web interface for Docker instance
 
 import argparse
 import asyncio
@@ -1503,8 +1504,18 @@ def configure_root_logging(cfg: ServerConfig) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Tkinter TFTP server with progress, audit, and CSV transfer logging.")
-    p.add_argument("--config", "-c", help="Path to a config JSON file to use/initialize.")
+    p = argparse.ArgumentParser(
+        description="Tkinter TFTP server with progress, audit, and CSV transfer logging."
+    )
+    p.add_argument(
+        "--config", "-c",
+        help="Path to a config JSON file to use/initialize."
+    )
+    p.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run in server-only mode without launching the GUI"
+    )
     return p.parse_args()
 
 
@@ -1513,7 +1524,10 @@ def main() -> None:
     cfg_path = resolve_config_path(args.config)
     cfg = load_config(cfg_path)
 
-    if tk is None:
+    # Run headless if either:
+    #  - Tk is unavailable (container/headless env), OR
+    #  - the user explicitly requested --headless
+    if (tk is None) or getattr(args, "headless", False):
         try:
             validate_root_dir(cfg)
             validate_transfer_port_range(cfg)
@@ -1549,6 +1563,7 @@ def main() -> None:
             server.stop()
         return
 
+    # GUI mode (Tk available and --headless not set)
     app = TFTPApp(cfg)
     app.mainloop()
     try:
