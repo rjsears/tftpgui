@@ -6,7 +6,7 @@ from __future__ import annotations
 
 ## TFTP Gui
 __author__ = 'Richard J. Sears'
-VERSION = "1.0.2 (2025-10-17)"
+VERSION = "1.0.3 (2025-10-18)"
 
 ## Graphical TFTP Server for use on *Nix systems
 
@@ -99,6 +99,10 @@ class ServerConfig:
 
     metrics_window_sec: int = 5
     ephemeral_ports: bool = True
+    transfer_port_min: Optional[int] = None
+    transfer_port_max: Optional[int] = None
+
+    
 
     config_file: Path = field(default=Path.cwd() / CWD_CONFIG_NAME)
 
@@ -126,6 +130,8 @@ class ServerConfig:
             "transfer_log_file": str(self.transfer_log_file) if self.transfer_log_file else None,
             "metrics_window_sec": self.metrics_window_sec,
             "ephemeral_ports": self.ephemeral_ports,
+            "transfer_port_min": self.transfer_port_min,
+            "transfer_port_max": self.transfer_port_max,
         }
 
     @classmethod
@@ -156,6 +162,12 @@ class ServerConfig:
         cfg.transfer_log_file = Path(tlf) if (tlf not in (None, "")) else None
         cfg.metrics_window_sec = int(data.get("metrics_window_sec", cfg.metrics_window_sec))
         cfg.ephemeral_ports = bool(data.get("ephemeral_ports", cfg.ephemeral_ports))
+        cfg.transfer_port_min = data.get("transfer_port_min", None)
+        cfg.transfer_port_max = data.get("transfer_port_max", None)
+        if cfg.transfer_port_min is not None:
+            cfg.transfer_port_min = int(cfg.transfer_port_min)
+        if cfg.transfer_port_max is not None:
+            cfg.transfer_port_max = int(cfg.transfer_port_max)
         return cfg
 
 
@@ -182,7 +194,9 @@ def default_config_template() -> dict:
         "audit_log_file": None,
         "transfer_log_file": None,
         "metrics_window_sec": 5,
-        "ephemeral_ports": True
+        "ephemeral_ports": True,
+        "transfer_port_min": 50000,
+        "transfer_port_max": 50100
     }
 
 
@@ -225,6 +239,14 @@ def validate_root_dir(cfg: ServerConfig) -> None:
     root = Path(cfg.root_dir).expanduser().resolve()
     if not root.exists() or not root.is_dir():
         raise ValueError(f"root_dir '{root}' does not exist or is not a directory.")
+
+
+def validate_transfer_port_range(cfg: ServerConfig) -> None:
+    if cfg.transfer_port_min is None or cfg.transfer_port_max is None:
+        return
+    lo, hi = cfg.transfer_port_min, cfg.transfer_port_max
+    if not (1024 <= lo < hi <= 65535):
+        raise ValueError(f"Invalid transfer port range: {lo}-{hi}")
 
 
 def safe_join(root: Path, user_path: str) -> Optional[Path]:
@@ -817,11 +839,30 @@ class ListenerProtocol(asyncio.DatagramProtocol):
             self.loop.create_task(self._spawn_transfer(sess, options, rrq=False))
 
     async def _spawn_transfer(self, sess: Session, options: Dict[str, str], rrq: bool) -> None:
-        local_addr = (self.cfg.host, 0) if self.cfg.ephemeral_ports else (self.cfg.host, self.cfg.port)
-        transport, protocol = await self.loop.create_datagram_endpoint(
-            lambda: TransferProtocol(self.cfg, self.logger, self.event_q, sess),
-            local_addr=local_addr,
-        )
+        host = self.cfg.host
+        lo, hi = self.cfg.transfer_port_min, self.cfg.transfer_port_max
+        transport = None
+        protocol = None
+        if lo is not None and hi is not None and lo < hi:
+            last_exc = None
+            for p in range(lo, hi + 1):
+                try:
+                    transport, protocol = await self.loop.create_datagram_endpoint(
+                        lambda: TransferProtocol(self.cfg, self.logger, self.event_q, sess),
+                        local_addr=(host, p),
+                    )
+                    break
+                except Exception as e:
+                    last_exc = e
+                    continue
+            if transport is None:
+                raise OSError(f"No free data port in {lo}-{hi}: {last_exc}")
+        else:
+            local_addr = (host, 0) if self.cfg.ephemeral_ports else (host, self.cfg.port)
+            transport, protocol = await self.loop.create_datagram_endpoint(
+                lambda: TransferProtocol(self.cfg, self.logger, self.event_q, sess),
+                local_addr=local_addr,
+            )
 
         oack_opts: Dict[str, str] = {}
         if "blksize" in options:
@@ -895,6 +936,7 @@ class ServerThread:
     def _run_loop(self) -> None:
         try:
             validate_root_dir(self.cfg)
+            validate_transfer_port_range(self.cfg)
             self._maybe_chroot()
             self._loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._loop)
@@ -952,6 +994,7 @@ if tk is None:
         pass
 else:
     _TkBase = tk.Tk
+
 
 class TFTPApp(_TkBase):  # type: ignore
     """Tkinter GUI application for configuring and running the TFTP server."""
@@ -1473,6 +1516,7 @@ def main() -> None:
     if tk is None:
         try:
             validate_root_dir(cfg)
+            validate_transfer_port_range(cfg)
         except Exception as exc:
             print(f"ERROR: {exc}")
             print(f"Edit this file and set 'root_dir': {cfg.config_file}")
