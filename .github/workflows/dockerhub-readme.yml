@@ -1,0 +1,24 @@
+name: Sync Docker Hub Overview
+on:
+  push:
+    branches: [ main ]
+    paths: [ README.md ]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: rjsears/tftpgui
+          short-description: "Full-featured TFTP server (GUI & headless) with Docker support"
+          readme-filepath: README.md
