@@ -6,7 +6,7 @@ from __future__ import annotations
 
 ## TFTP Gui
 __author__ = 'Richard J. Sears'
-VERSION = "1.0.1 (2025-10-17)"
+VERSION = "1.0.2 (2025-10-17)"
 
 ## Graphical TFTP Server for use on *Nix systems
 
