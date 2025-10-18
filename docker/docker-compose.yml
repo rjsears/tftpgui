@@ -1,44 +1,79 @@
-# docker-compose.yml
-#
-# Two service definitions:
-# - tftpgui_host: simplest networking (Linux only), uses host's UDP stack
-# - tftpgui_bridged: portable, explicit UDP port mappings; add CAP_NET_BIND_SERVICE if binding <1024
+version: "3.9"
 
 services:
-  # -------- OPTION A: Host networking (Linux only) --------
-  tftpgui_host:
-    image: rjsears/tftpgui:1.0.0
-    container_name: tftpgui_host
-    build:
-      context: .
-      dockerfile: Dockerfile
-    network_mode: host
-    restart: unless-stopped
-    volumes:
-      - /home/tftpd/tftp:/data:rw
-      - /home/tftpd/tftpgui/container.tftpgui_config.json:/app/.tftpgui_config.json:ro
-      - /home/tftpd/tftpgui/logs:/logs
-    command: ["-c", "/app/.tftpgui_config.json"]
-    # No ports section needed on host network
-    # GUI not available in container; this runs headless
+  # -------------------------------------------------------------
+  # Recommended: Bridged networking with mapped ports (portable)
+  # -------------------------------------------------------------
+  tftpgui:
+    # Use the published image, or uncomment "build" to build locally
+    image: rjsears/tftpgui:1.0.3
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
 
-  # -------- OPTION B: Bridged network with explicit UDP ports --------
-  tftpgui_bridged:
-    image: rjsears/tftpgui:1.0.0
-    container_name: tftpgui_bridged
-    build:
-      context: .
-      dockerfile: Dockerfile
+    container_name: tftpgui
     restart: unless-stopped
-    cap_add:
-      - NET_BIND_SERVICE   # allows binding to UDP 69 as non-root
+
+    # Map host 69 -> container 1069, and a fixed data port range 50000-50100
     ports:
-      - "69:69/udp"
-      # Map a small ephemeral UDP range for the per-transfer sockets.
-      # Adjust to match your config/logs & traffic volume.
+      - "69:1069/udp"
       - "50000-50100:50000-50100/udp"
+
+    # Volumes:
+    # - Map your TFTP data root to /data
+    # - Mount your Docker-specific config to /app/.tftpgui_config.json (read-only)
+    # - Mount a logs directory to /logs so files persist on the host
     volumes:
-      - /home/tftpd/tftp:/data:rw
-      - /home/tftpd/tftpgui/container.tftpgui_config.json:/app/.tftpgui_config.json:ro
-      - /home/tftpd/tftpgui/logs:/logs
-    command: ["-c", "/app/.tftpgui_config.json"]
+      - ./data:/data
+      - ./container.tftpgui_config.json:/app/.tftpgui_config.json:ro
+      - ./logs:/logs
+
+    # Command delegates to the default CMD in Dockerfile, but you can override here if desired
+    command: ["--headless", "-c", "/app/.tftpgui_config.json"]
+
+    # Helpful labels and resource hints (optional)
+    labels:
+      com.rjsears.tftpgui: "bridged"
+
+  # -------------------------------------------------------------
+  # Advanced: Host networking (binds 69/udp directly on the host)
+  # Enable with:  docker compose --profile hostnet up -d tftpgui-host
+  # -------------------------------------------------------------
+  tftpgui-host:
+    # Use the same image
+    image: rjsears/tftpgui:1.0.3
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+
+    container_name: tftpgui-host
+    restart: unless-stopped
+
+    profiles: ["hostnet"]
+
+    # Host networking means no port mappings; the app binds directly to host interfaces
+    network_mode: host
+
+    # Choose ONE of the following permission strategies (uncomment as needed):
+    #
+    # 1) Run as root inside container (simplest):
+    # user: "0:0"
+    #
+    # 2) Allow non-root to bind low ports on this container:
+    # sysctls:
+    #   - net.ipv4.ip_unprivileged_port_start=0
+    #
+    # 3) If your image grants python cap_net_bind_service and your host allows it:
+    # cap_add:
+    #   - NET_BIND_SERVICE
+
+    volumes:
+      - ./data:/data
+      - ./host.tftpgui_config.json:/app/.tftpgui_config.json:ro
+      - ./logs:/logs
+
+    # For host mode, your config should typically set "port": 69 and "root_dir": "/data"
+    command: ["--headless", "-c", "/app/.tftpgui_config.json"]
+
+    labels:
+      com.rjsears.tftpgui: "hostnet"
