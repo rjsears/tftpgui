@@ -204,8 +204,8 @@ INFO:     172.17.0.1:55282 - "GET /api/events HTTP/1.1" 200 OK
 INFO:     172.17.0.1:55292 - "GET /api/events HTTP/1.1" 200 OK
 INFO:     172.17.0.1:55302 - "GET /api/events HTTP/1.1" 200 OK
 ```
-
-
+---
+![TFTP GUI Screenshot](https://raw.githubusercontent.com/rjsears/tftpgui/main/images/tftpgui3.png)
 ---
 
 ## Docker Support
@@ -216,7 +216,7 @@ The container is built to run in **headless mode** (no GUI), perfect for lab ser
 ### Pull the image
 
 ```bash
-docker pull rjsears/tftpgui:1.0.4
+docker pull rjsears/tftpgui:1.1.5
 ````
 
 Or always grab the newest build:
@@ -234,7 +234,7 @@ docker run --rm -it --network host --user 0:0 \
   -v /home/crypto/tftp:/data \
   -v /home/crypto/.tftpgui_config.json:/app/.tftpgui_config.json:ro \
   -v /home/crypto/tftpgui/logs:/logs \
-  rjsears/tftpgui:1.0.3
+  rjsears/tftpgui:1.1.5
 ```
 ### Quick run with host networking (Linux only, allow low prots for unprivileged (per-run sysctl))
 
@@ -244,7 +244,7 @@ docker run --rm -it --network host \
   -v /home/crypto/tftp:/data \
   -v /home/crypto/.tftpgui_config.json:/app/.tftpgui_config.json:ro \
   -v /home/crypto/tftpgui/logs:/logs \
-  rjsears/tftpgui:1.0.3
+  rjsears/tftpgui:1.1.5
 ```
 
 These use your host’s network stack directly, so you don’t have to map UDP ports.
@@ -260,7 +260,7 @@ docker run --rm -it \
   -v /home/crypto/tftp:/data \
   -v /home/crypto/container.tftpgui_config.json:/app/.tftpgui_config.json:ro \
   -v /home/crypto/tftpgui/logs:/logs \
-  rjsears/tftpgui:1.0.4
+  rjsears/tftpgui:1.1.5
 ```
 
 This maps **UDP port 69** and an ephemeral range (`50000–50100`) that the server uses for data transfers.
