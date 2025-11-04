@@ -1179,6 +1179,8 @@ class TFTPApp(_TkBase):  # type: ignore
         self.event_q: "queue.Queue[Event]" = self._fanout.register()
         self.server_thread = ServerThread(self.cfg, self.logger, self._fanout)
         self.running = False
+        self.web_server = None  # Track web server for shutdown
+        self.web_thread = None  # Track web thread
 
         self._build_widgets()
         self._load_config_file()
@@ -1191,17 +1193,21 @@ class TFTPApp(_TkBase):  # type: ignore
         if self._start_web and FastAPI is not None:
             try:
                 app_web = create_web_app(self.cfg, self._fanout, self.server_thread)
-                threading.Thread(
-                    target=run_web,
-                    args=(
-                        app_web,
-                        str(self.cfg.web.get("host", "0.0.0.0")),
-                        int(self.cfg.web.get("port", 8080)),
-                    ),
-                    name="TFTP-Web",
-                    daemon=True,
-                ).start()
-                print(f"Web UI starting on {self.cfg.web.get('host', '0.0.0.0')}:{self.cfg.web.get('port', 8080)}")
+                web_host = str(self.cfg.web.get("host", "0.0.0.0"))
+                web_port = int(self.cfg.web.get("port", 8080))
+
+                # Create server instance for controlled shutdown
+                if uvicorn is not None:
+                    import uvicorn
+                    config = uvicorn.Config(app_web, host=web_host, port=web_port, log_level="info")
+                    self.web_server = uvicorn.Server(config)
+                    self.web_thread = threading.Thread(
+                        target=self.web_server.run,
+                        name="TFTP-Web",
+                        daemon=True,
+                    )
+                    self.web_thread.start()
+                    print(f"Web UI starting on {web_host}:{web_port}")
             except Exception as e:
                 print(f"Web UI failed to start: {e}")
 
@@ -1497,10 +1503,18 @@ class TFTPApp(_TkBase):  # type: ignore
         except Exception:
             pass
         try:
-            # Stop server and wait for thread to finish before closing
+            # Stop TFTP server and wait for thread to finish
             self.server_thread.stop(wait=True, timeout=3.0)
             self.running = False
             self.status.set("Stopped")
+        except Exception:
+            pass
+        try:
+            # Stop web server if running
+            if self.web_server is not None:
+                self.web_server.should_exit = True
+                if self.web_thread and self.web_thread.is_alive():
+                    self.web_thread.join(timeout=2.0)
         except Exception:
             pass
         try:
