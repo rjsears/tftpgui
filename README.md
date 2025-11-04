@@ -279,7 +279,7 @@ services:
   # -------------------------------------------------------------
   tftpgui:
     # Use the published image, or uncomment "build" to build locally
-    image: rjsears/tftpgui:1.0.4
+    image: rjsears/tftpgui:1.1.5
     # build:
     #   context: .
     #   dockerfile: Dockerfile
@@ -315,7 +315,7 @@ services:
   # -------------------------------------------------------------
   tftpgui-host:
     # Use the same image
-    image: rjsears/tftpgui:1.0.4
+    image: rjsears/tftpgui:1.1.5
     # build:
     #   context: .
     #   dockerfile: Dockerfile
