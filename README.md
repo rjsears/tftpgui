@@ -185,6 +185,27 @@ Logs and audit events will print to stdout and your configured log files.
 python3 ./tftpgui_enterprise.py -w -p 8080
 ```
 
+If you are running the Web Dashboard, you should see this when you start the server:
+
+```
+Web UI starting on 0.0.0.0:8080
+TFTP server running with config: /app/.tftpgui_config.json. Press Ctrl+C to stop.
+21:04:30 [INFO] Listener bound on 0.0.0.0:1069
+21:04:30 [INFO] Listener bound on 0.0.0.0:1069
+[server] RUNNING on 0.0.0.0:1069
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     172.17.0.1:55248 - "GET /api/events HTTP/1.1" 200 OK
+INFO:     172.17.0.1:55262 - "GET /api/events HTTP/1.1" 200 OK
+INFO:     172.17.0.1:55274 - "GET /api/events HTTP/1.1" 200 OK
+INFO:     172.17.0.1:55282 - "GET /api/events HTTP/1.1" 200 OK
+INFO:     172.17.0.1:55292 - "GET /api/events HTTP/1.1" 200 OK
+INFO:     172.17.0.1:55302 - "GET /api/events HTTP/1.1" 200 OK
+```
+
+
 ---
 
 ## Docker Support
