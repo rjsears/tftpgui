@@ -21,7 +21,7 @@ CLI:
 """
 
 __author__ = "Richard J. Sears"
-VERSION = "1.1.0 (2025-10-19)"
+VERSION = "1.1.0 (2025-11-04)"
 
 import argparse
 import asyncio
@@ -630,13 +630,20 @@ class ServerThread:
                 self._loop.close()
             self.logger.info("TFTP server loop stopped.")
 
-    def stop(self) -> None:
-        """Stop the TFTP server cleanly."""
+    def stop(self, wait: bool = False, timeout: float = 2.0) -> None:
+        """Stop the TFTP server cleanly.
+
+        Args:
+            wait: If True, block until thread stops (use only on app exit, not from GUI button)
+            timeout: Maximum seconds to wait if wait=True
+        """
         if self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._loop.stop)
         self._broadcast_server(False)
-        # Note: join() removed to prevent GUI lockup - daemon thread will clean up automatically
-        self._thread = None
+
+        if wait and self._thread and self._thread.is_alive():
+            self._thread.join(timeout=timeout)
+
         self.logger.info("TFTP server stopped.")
 
 # ---------------------------------------------------------------------------
@@ -1172,6 +1179,8 @@ class TFTPApp(_TkBase):  # type: ignore
         self.event_q: "queue.Queue[Event]" = self._fanout.register()
         self.server_thread = ServerThread(self.cfg, self.logger, self._fanout)
         self.running = False
+        self.web_server = None  # Track web server for shutdown
+        self.web_thread = None  # Track web thread
 
         self._build_widgets()
         self._load_config_file()
@@ -1184,17 +1193,20 @@ class TFTPApp(_TkBase):  # type: ignore
         if self._start_web and FastAPI is not None:
             try:
                 app_web = create_web_app(self.cfg, self._fanout, self.server_thread)
-                threading.Thread(
-                    target=run_web,
-                    args=(
-                        app_web,
-                        str(self.cfg.web.get("host", "0.0.0.0")),
-                        int(self.cfg.web.get("port", 8080)),
-                    ),
-                    name="TFTP-Web",
-                    daemon=True,
-                ).start()
-                print(f"Web UI starting on {self.cfg.web.get('host', '0.0.0.0')}:{self.cfg.web.get('port', 8080)}")
+                web_host = str(self.cfg.web.get("host", "0.0.0.0"))
+                web_port = int(self.cfg.web.get("port", 8080))
+
+                # Create server instance for controlled shutdown
+                if uvicorn is not None:
+                    config = uvicorn.Config(app_web, host=web_host, port=web_port, log_level="info")
+                    self.web_server = uvicorn.Server(config)
+                    self.web_thread = threading.Thread(
+                        target=self.web_server.run,
+                        name="TFTP-Web",
+                        daemon=True,
+                    )
+                    self.web_thread.start()
+                    print(f"Web UI starting on {web_host}:{web_port}")
             except Exception as e:
                 print(f"Web UI failed to start: {e}")
 
@@ -1490,13 +1502,33 @@ class TFTPApp(_TkBase):  # type: ignore
         except Exception:
             pass
         try:
-            self.stop_server()
+            # Stop TFTP server and wait for thread to finish
+            self.server_thread.stop(wait=True, timeout=3.0)
+            self.running = False
+            self.status.set("Stopped")
+        except Exception:
+            pass
+        try:
+            # Stop web server if running
+            if self.web_server is not None:
+                self.web_server.should_exit = True
+                if self.web_thread and self.web_thread.is_alive():
+                    self.web_thread.join(timeout=2.0)
+                    # If still alive after timeout, force exit
+                    if self.web_thread.is_alive():
+                        self.logger.warning("Web server did not stop gracefully, forcing exit")
         except Exception:
             pass
         try:
             self.destroy()
         except Exception:
             pass
+
+        # Force exit if we get here - ensures process terminates
+        # even if some threads are still finishing cleanup
+        # Use os._exit() which is more forceful than sys.exit()
+        import os
+        os._exit(0)
 
     # ------- UI helpers -------
     def _open_config(self) -> None:
@@ -1542,7 +1574,10 @@ class TFTPApp(_TkBase):  # type: ignore
 
             self._setup_logging()
 
-            self.server_thread = ServerThread(self.cfg, self.logger, self._fanout)
+            # Update existing server_thread's config instead of creating new instance
+            # This ensures web interface keeps the correct reference
+            self.server_thread.cfg = self.cfg
+            self.server_thread.logger = self.logger
             self.server_thread.start()
             self.running = True
             self.status.set(f"Running on {self.cfg.host}:{self.cfg.port} — Root: {self.cfg.root_dir}")
