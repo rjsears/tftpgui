@@ -26,5 +26,11 @@
   "log_max_bytes": 5000000,
   "log_backup_count": 5,
   "log_when": "midnight",
-  "log_interval": 1
+  "log_interval": 1,
+
+  "web": {
+    "enabled": true,
+    "host": "0.0.0.0",
+    "port": 8080
+  }
 }
