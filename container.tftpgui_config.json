@@ -26,12 +26,12 @@
   "log_interval": 1,
 
   "metrics_window_sec": 5,
-  "ephemeral_ports": true,
+  "ephemeral_ports": false,
   "transfer_port_min": 50000,
   "transfer_port_max": 50100,
 
     "web": {
-    "enabled": false,
+    "enabled": true,
     "host": "0.0.0.0",
     "port": 8080
   }
