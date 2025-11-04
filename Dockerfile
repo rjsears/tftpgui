@@ -34,6 +34,7 @@ USER tftpuser
 # Expose the container’s internal UDP ports (docs/hint only)
 # - 1069 is the internal listener (we map host 69 -> 1069 in compose)
 # - 50000-50100 is the recommended fixed data port range
+# - 8080 is the web UI port
 EXPOSE 1069/udp
 EXPOSE 50000-50100/udp
 EXPOSE 8080/tcp
