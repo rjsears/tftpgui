@@ -36,6 +36,7 @@ USER tftpuser
 # - 50000-50100 is the recommended fixed data port range
 EXPOSE 1069/udp
 EXPOSE 50000-50100/udp
+EXPOSE 8080/tcp
 
 # Default command: headless server using config mounted at /app/.tftpgui_config.json
 # (GUI is disabled in container; run GUI on desktop outside Docker.)
