@@ -19,7 +19,7 @@ TFTPGui is a fully modernized TFTP server written in Python 3 with a **graphical
 If you work with firmware, embedded devices, PXE booting, routers/switches, or lab environments, this tool gives you all the control and visibility that the old stuff is missing.
 
 ---
-![TFTP GUI Screenshot](https://raw.githubusercontent.com/rjsears/tftpgui/main/images/tftpgui3.png)
+![TFTP GUI Screenshot](https://raw.githubusercontent.com/rjsears/tftpgui/main/images/desktop_interface_v115.png)
 
 ---
 
@@ -205,7 +205,7 @@ INFO:     172.17.0.1:55292 - "GET /api/events HTTP/1.1" 200 OK
 INFO:     172.17.0.1:55302 - "GET /api/events HTTP/1.1" 200 OK
 ```
 ---
-![TFTP GUI Screenshot](https://raw.githubusercontent.com/rjsears/tftpgui/main/images/tftpgui3.png)
+![TFTP GUI Screenshot](https://raw.githubusercontent.com/rjsears/tftpgui/main/images/web_interface_v115.png)
 ---
 
 ## Docker Support
