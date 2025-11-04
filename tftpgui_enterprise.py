@@ -1526,8 +1526,9 @@ class TFTPApp(_TkBase):  # type: ignore
 
         # Force exit if we get here - ensures process terminates
         # even if some threads are still finishing cleanup
-        import sys
-        sys.exit(0)
+        # Use os._exit() which is more forceful than sys.exit()
+        import os
+        os._exit(0)
 
     # ------- UI helpers -------
     def _open_config(self) -> None:
