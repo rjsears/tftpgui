@@ -1899,7 +1899,7 @@ def create_web_app(cfg: ServerConfig, fanout: EventFanout, server: "ServerThread
                 while True:
                     e = await asyncio.get_event_loop().run_in_executor(None, q.get)
                     yield f"data: {json.dumps(_event_to_json(e))}\n\n"
-            except asyncio.CancelledError:
+            except (asyncio.CancelledError, RuntimeError):
                 return
 
         return StreamingResponse(gen(), media_type="text/event-stream")
