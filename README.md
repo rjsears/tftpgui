@@ -288,9 +288,10 @@ services:
     restart: unless-stopped
 
     # Map host 69 -> container 1069, and a fixed data port range 50000-50100
-    ports:
+    ports, plus 8080 for the Web UI:
       - "69:1069/udp"
       - "50000-50100:50000-50100/udp"
+      - "8080:8080/tcp"
 
     # Volumes:
     # - Map your TFTP data root to /data
