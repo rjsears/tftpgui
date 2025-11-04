@@ -1198,7 +1198,6 @@ class TFTPApp(_TkBase):  # type: ignore
 
                 # Create server instance for controlled shutdown
                 if uvicorn is not None:
-                    import uvicorn
                     config = uvicorn.Config(app_web, host=web_host, port=web_port, log_level="info")
                     self.web_server = uvicorn.Server(config)
                     self.web_thread = threading.Thread(
