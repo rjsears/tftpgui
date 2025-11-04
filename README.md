@@ -1,6 +1,6 @@
 <div align="center">
 
-  ## TFTPGui – A Modern GUI & Headless TFTP Server in Python3 (v1.1.1)
+  ## TFTPGui – A Modern GUI & Headless TFTP Server in Python3 (v1.1.2)
 
   
 ![Last Commit](https://img.shields.io/github/last-commit/rjsears/tftpgui)
@@ -75,8 +75,11 @@ python3 -m venv venv
 source venv/bin/activate
 ```
 
-No external Python modules are required — it uses only the standard library.
-
+```
+# Core web interface dependencies
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+```
 ---
 
 ## Configuration
