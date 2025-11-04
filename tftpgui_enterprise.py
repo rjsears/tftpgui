@@ -634,11 +634,9 @@ class ServerThread:
         """Stop the TFTP server cleanly."""
         if self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._loop.stop)
-        self.is_running = False
         self._broadcast_server(False)
-        if self._thread:
-            self._thread.join(timeout=2)
-            self._thread = None
+        # Note: join() removed to prevent GUI lockup - daemon thread will clean up automatically
+        self._thread = None
         self.logger.info("TFTP server stopped.")
 
 # ---------------------------------------------------------------------------
