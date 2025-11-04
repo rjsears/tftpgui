@@ -21,7 +21,7 @@ CLI:
 """
 
 __author__ = "Richard J. Sears"
-VERSION = "1.1.4 (2025-11-04)"
+VERSION = "1.1.5 (2025-11-04)"
 
 import argparse
 import asyncio
