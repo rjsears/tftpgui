@@ -14,7 +14,7 @@
 
 ## What is TFTPGui?
 
-TFTPGui is a fully modernized TFTP server written in Python 3 with both a **graphical user interface** and a **headless (CLI) mode** for true flexibility. It was built as a replacement for outdated Python2/xinetd TFTP setups and provides real-time monitoring, logging, security controls, and an easy configuration system.
+TFTPGui is a fully modernized TFTP server written in Python 3 with a **graphical user interface**, **headless (CLI) mode**, and a **web-based dashboard** for true flexibility. It was built as a replacement for outdated Python2/xinetd TFTP setups and provides real-time monitoring, logging, security controls, and an easy configuration system.
 
 If you work with firmware, embedded devices, PXE booting, routers/switches, or lab environments, this tool gives you all the control and visibility that the old stuff is missing.
 
@@ -25,7 +25,8 @@ If you work with firmware, embedded devices, PXE booting, routers/switches, or l
 
 ## Features
 
-- Runs in GUI or headless mode  
+- Runs in GUI or headless mode
+- Web Dashboard for veiwing status and transfers  
 - Real-time transfer progress bars  
 - JSON-based configuration  
 - IP allowlist / denylist support  
@@ -98,32 +99,40 @@ The script checks for it in this order:
 {
   "host": "0.0.0.0",
   "port": 69,
-  "root_dir": "/home/tftpd/tftp",
+  "root_dir": "/home/crypto/tftp",
 
-  "allow_write": true,
-  "writable_subdirs": ["uploads", "staging"],
+  "allow_write": false,
+  "writable_subdirs": [],
   "enforce_chroot": false,
 
-  "filename_allowlist": [".bin", ".cfg", ".hex"],
-  "allowlist_ips": ["127.0.0.1/32", "::1/128", "192.168.0.0/24", "10.200.50.0/24"],
-  "denylist_ips": [],
+  "filename_allowlist": [],
+  "allowlist_ips": ["192.168.0.0/24", "10.200.50.0/24"],
+  "denylist_ips": ["10.200.66.0/24"],
 
   "timeout_sec": 3.0,
   "max_retries": 5,
   "log_level": "INFO",
 
-  "log_file": "/home/tftpd/tftpgui/logs/tftpgui.log",
-  "audit_log_file": "/home/tftpd/tftpgui/logs/audit.jsonl",
-  "transfer_log_file": "/home/tftpd/tftpgui/logs/transfers.csv",
-
-  "metrics_window_sec": 5,
-  "ephemeral_ports": true,
+  "log_file": "/home/crypto/tftpd.log",
+  "audit_log_file": "/home/crypto/tftpd.audit.log",
+  "transfer_log_file": "/home/crypto/tftpd.log.csv",
 
   "log_rotation": "size",
   "log_max_bytes": 5000000,
   "log_backup_count": 5,
   "log_when": "midnight",
-  "log_interval": 1
+  "log_interval": 1,
+
+  "metrics_window_sec": 5,
+  "ephemeral_ports": true,
+  "transfer_port_min": 50000,
+  "transfer_port_max": 50100,
+
+    "web": {
+    "enabled": true,
+    "host": "0.0.0.0",
+    "port": 8080
+  }
 }
 
 ```
@@ -134,7 +143,7 @@ You can override the config file on launch:
 python3 tftpgui_enterprise.py -c /path/to/custom.json
 ```
 
-This is handy if you want to run both a docker headless version as well as the gui version on the same system (at different times).
+This is handy if you want to run both a Docker headless version and the GUI version on the same system (at different times).
 
 ---
 
@@ -143,28 +152,35 @@ This is handy if you want to run both a docker headless version as well as the g
 ### GUI Mode
 
 ```bash
-python3 tftpgui_enterprise.py
+python3 ./tftpgui_enterprise.py
 ```
 
 Or with a specific config:
 
 ```bash
-python3 tftpgui_enterprise.py -c /path/config.json
+python3 ./tftpgui_enterprise.py -c /path/config.json
 ```
 
 If you need privileged ports (like port 69):
 
 ```bash
-sudo python3 tftpgui_enterprise.py
+sudo ./python3 tftpgui_enterprise.py
 ```
 
 ### Headless Mode
 
 ```bash
-python3 tftpgui_enterprise.py --headless
+python3 ./tftpgui_enterprise.py --headless
 ```
 
 Logs and audit events will print to stdout and your configured log files.
+
+
+### With the Web Dashboard on port 8080
+
+```bash
+python3 ./tftpgui_enterprise.py -w -p 8080
+```
 
 ---
 
