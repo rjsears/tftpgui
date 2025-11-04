@@ -630,13 +630,20 @@ class ServerThread:
                 self._loop.close()
             self.logger.info("TFTP server loop stopped.")
 
-    def stop(self) -> None:
-        """Stop the TFTP server cleanly."""
+    def stop(self, wait: bool = False, timeout: float = 2.0) -> None:
+        """Stop the TFTP server cleanly.
+
+        Args:
+            wait: If True, block until thread stops (use only on app exit, not from GUI button)
+            timeout: Maximum seconds to wait if wait=True
+        """
         if self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._loop.stop)
         self._broadcast_server(False)
-        # Note: join() removed to prevent GUI lockup - daemon thread will clean up automatically
-        self._thread = None
+
+        if wait and self._thread and self._thread.is_alive():
+            self._thread.join(timeout=timeout)
+
         self.logger.info("TFTP server stopped.")
 
 # ---------------------------------------------------------------------------
@@ -1490,7 +1497,10 @@ class TFTPApp(_TkBase):  # type: ignore
         except Exception:
             pass
         try:
-            self.stop_server()
+            # Stop server and wait for thread to finish before closing
+            self.server_thread.stop(wait=True, timeout=3.0)
+            self.running = False
+            self.status.set("Stopped")
         except Exception:
             pass
         try:
@@ -1542,7 +1552,10 @@ class TFTPApp(_TkBase):  # type: ignore
 
             self._setup_logging()
 
-            self.server_thread = ServerThread(self.cfg, self.logger, self._fanout)
+            # Update existing server_thread's config instead of creating new instance
+            # This ensures web interface keeps the correct reference
+            self.server_thread.cfg = self.cfg
+            self.server_thread.logger = self.logger
             self.server_thread.start()
             self.running = True
             self.status.set(f"Running on {self.cfg.host}:{self.cfg.port} — Root: {self.cfg.root_dir}")
