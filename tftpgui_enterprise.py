@@ -1514,12 +1514,20 @@ class TFTPApp(_TkBase):  # type: ignore
                 self.web_server.should_exit = True
                 if self.web_thread and self.web_thread.is_alive():
                     self.web_thread.join(timeout=2.0)
+                    # If still alive after timeout, force exit
+                    if self.web_thread.is_alive():
+                        self.logger.warning("Web server did not stop gracefully, forcing exit")
         except Exception:
             pass
         try:
             self.destroy()
         except Exception:
             pass
+
+        # Force exit if we get here - ensures process terminates
+        # even if some threads are still finishing cleanup
+        import sys
+        sys.exit(0)
 
     # ------- UI helpers -------
     def _open_config(self) -> None:
