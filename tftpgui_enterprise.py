@@ -4,19 +4,24 @@
 from __future__ import annotations
 
 
-## TFTP Gui
-__author__ = 'Richard J. Sears'
-VERSION = "1.0.4 (2025-10-18)"
+"""
+TFTP Server (GUI + Headless) with optional Web UI (FastAPI).
 
-## Graphical TFTP Server for use on *Nix systems
+- Supports RRQ/WRQ (octet), blocksize negotiation, tsize
+- Progress, rate, ETA, hashes; audit JSONL and CSV transfer logs
+- GUI mode (Tk) with colored banner + live table
+- Headless mode with console progress
+- Optional Web UI: dashboard, /api/status, /api/events (SSE)
+- Config file: looks in CWD .tftpgui_config.json, then HOME; override -c
 
+CLI:
+  python3 tftpgui_enterprise.py -c /path/conf.json       # GUI
+  python3 tftpgui_enterprise.py --headless -c conf.json   # Headless
+  python3 tftpgui_enterprise.py -c conf.json -w -p 8080   # Start Web UI too
+"""
 
-
-## TODO
-# Add function commenting
-# Add some system tests
-# Clean up some of the functions
-# Work on Web interface for Docker instance
+__author__ = "Richard J. Sears"
+VERSION = "1.1.0 (2025-10-19)"
 
 import argparse
 import asyncio
@@ -35,16 +40,28 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Deque, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
+# ---------- Optional web deps (gracefully absent if not installed) ----------
+try:
+    from fastapi import FastAPI
+    from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+    import uvicorn
+except Exception:  # pragma: no cover
+    FastAPI = None  # type: ignore
+    uvicorn = None  # type: ignore
+
+# ---------- Optional GUI (Tk) ----------
 try:
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
     from tkinter.scrolledtext import ScrolledText
 except Exception:  # pragma: no cover
     tk = None  # type: ignore
+    ttk = None  # type: ignore
+    ScrolledText = None  # type: ignore
 
-
+# ---------- TFTP constants ----------
 TFTP_PORT_DEFAULT = 69
 DEFAULT_BLOCK_SIZE = 512
 MIN_BLOCK_SIZE = 8
@@ -65,15 +82,13 @@ ERR_UNKNOWN_TID = 5
 ERR_FILE_EXISTS = 6
 ERR_NO_SUCH_USER = 7
 
-
 CWD_CONFIG_NAME = ".tftpgui_config.json"
 HOME_CONFIG_NAME = ".tftpgui_config.json"
 
+# ---------- Config ----------
 
 @dataclass
 class ServerConfig:
-    """Runtime configuration for the TFTP GUI server."""
-
     host: str = "0.0.0.0"
     port: int = TFTP_PORT_DEFAULT
     root_dir: Path = Path("")
@@ -89,7 +104,7 @@ class ServerConfig:
     log_level: str = "INFO"
 
     log_file: Optional[Path] = None
-    log_rotation: str = "size"
+    log_rotation: str = "size"  # "size" or "time"
     log_max_bytes: int = 5_000_000
     log_backup_count: int = 5
     log_when: str = "midnight"
@@ -103,7 +118,7 @@ class ServerConfig:
     transfer_port_min: Optional[int] = None
     transfer_port_max: Optional[int] = None
 
-    
+    web: Dict[str, Any] = field(default_factory=lambda: {"enabled": False, "host": "0.0.0.0", "port": 8080})
 
     config_file: Path = field(default=Path.cwd() / CWD_CONFIG_NAME)
 
@@ -133,6 +148,7 @@ class ServerConfig:
             "ephemeral_ports": self.ephemeral_ports,
             "transfer_port_min": self.transfer_port_min,
             "transfer_port_max": self.transfer_port_max,
+            "web": self.web,
         }
 
     @classmethod
@@ -150,6 +166,7 @@ class ServerConfig:
         cfg.timeout_sec = float(data.get("timeout_sec", cfg.timeout_sec))
         cfg.max_retries = int(data.get("max_retries", cfg.max_retries))
         cfg.log_level = str(data.get("log_level", cfg.log_level))
+
         lf = data.get("log_file")
         cfg.log_file = Path(lf) if lf else None
         cfg.log_rotation = str(data.get("log_rotation", cfg.log_rotation)).lower()
@@ -157,10 +174,12 @@ class ServerConfig:
         cfg.log_backup_count = int(data.get("log_backup_count", cfg.log_backup_count))
         cfg.log_when = str(data.get("log_when", cfg.log_when))
         cfg.log_interval = int(data.get("log_interval", cfg.log_interval))
+
         alf = data.get("audit_log_file")
         cfg.audit_log_file = Path(alf) if (alf not in (None, "")) else None
         tlf = data.get("transfer_log_file")
         cfg.transfer_log_file = Path(tlf) if (tlf not in (None, "")) else None
+
         cfg.metrics_window_sec = int(data.get("metrics_window_sec", cfg.metrics_window_sec))
         cfg.ephemeral_ports = bool(data.get("ephemeral_ports", cfg.ephemeral_ports))
         cfg.transfer_port_min = data.get("transfer_port_min", None)
@@ -169,6 +188,8 @@ class ServerConfig:
             cfg.transfer_port_min = int(cfg.transfer_port_min)
         if cfg.transfer_port_max is not None:
             cfg.transfer_port_max = int(cfg.transfer_port_max)
+
+        cfg.web = dict(data.get("web", {"enabled": False, "host": "0.0.0.0", "port": 8080}))
         return cfg
 
 
@@ -197,7 +218,8 @@ def default_config_template() -> dict:
         "metrics_window_sec": 5,
         "ephemeral_ports": True,
         "transfer_port_min": 50000,
-        "transfer_port_max": 50100
+        "transfer_port_max": 50100,
+        "web": {"enabled": False, "host": "0.0.0.0", "port": 8080},
     }
 
 
@@ -208,21 +230,17 @@ def resolve_config_path(cli_override: Optional[str] = None) -> Path:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(json.dumps(default_config_template(), indent=2), encoding="utf-8")
         return p
-
-    candidates = [
-        Path.cwd() / CWD_CONFIG_NAME,
-        Path.home() / HOME_CONFIG_NAME,
-    ]
-    for p in candidates:
+    for p in [Path.cwd() / CWD_CONFIG_NAME, Path.home() / HOME_CONFIG_NAME]:
         if p.exists():
             return p
-    create_path = candidates[0]
+    # Create in CWD if none found
+    create_path = Path.cwd() / CWD_CONFIG_NAME
     create_path.write_text(json.dumps(default_config_template(), indent=2), encoding="utf-8")
     return create_path
 
 
 def load_config(path: Path) -> ServerConfig:
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     cfg = ServerConfig.from_json(data)
     cfg.config_file = path
     return cfg
@@ -231,7 +249,7 @@ def load_config(path: Path) -> ServerConfig:
 def save_config(cfg: ServerConfig) -> None:
     if not cfg.config_file:
         raise ValueError("Config file path is not set on ServerConfig.")
-    cfg.config_file.write_text(json.dumps(cfg.to_json(), indent=2))
+    cfg.config_file.write_text(json.dumps(cfg.to_json(), indent=2), encoding="utf-8")
 
 
 def validate_root_dir(cfg: ServerConfig) -> None:
@@ -249,6 +267,7 @@ def validate_transfer_port_range(cfg: ServerConfig) -> None:
     if not (1024 <= lo < hi <= 65535):
         raise ValueError(f"Invalid transfer port range: {lo}-{hi}")
 
+# ---------- Utility ----------
 
 def safe_join(root: Path, user_path: str) -> Optional[Path]:
     candidate = (root / user_path).resolve()
@@ -295,7 +314,6 @@ def parse_null_fields(data: bytes, start: int = 2) -> List[str]:
         except Exception:
             out.append("")
     return out
-
 
 def parse_rrq_wrq_with_options(data: bytes) -> Tuple[int, str, str, Dict[str, str]]:
     opcode = struct.unpack("!H", data[:2])[0]
@@ -376,9 +394,21 @@ def write_transfer_log_csv(path: Optional[Path], row: Dict[str, object]) -> None
             writer = csv.DictWriter(
                 fobj,
                 fieldnames=[
-                    "timestamp","client_ip","client_port","direction","filename",
-                    "total_size","bytes_done","percent","status","message",
-                    "md5","sha256","duration_sec","avg_rate_bps","block_size"
+                    "timestamp",
+                    "client_ip",
+                    "client_port",
+                    "direction",
+                    "filename",
+                    "total_size",
+                    "bytes_done",
+                    "percent",
+                    "status",
+                    "message",
+                    "md5",
+                    "sha256",
+                    "duration_sec",
+                    "avg_rate_bps",
+                    "block_size",
                 ],
             )
             if not exists:
@@ -386,8 +416,6 @@ def write_transfer_log_csv(path: Optional[Path], row: Dict[str, object]) -> None
             writer.writerow(row)
     except Exception:
         pass
-
-
 @dataclass
 class Session:
     client: Tuple[str, int]
@@ -409,7 +437,6 @@ class Session:
     expect_size: Optional[int] = None
     sent_oack: bool = False
     requested_opts: Dict[str, str] = field(default_factory=dict)
-
     history: Deque[Tuple[float, int]] = field(default_factory=deque)
 
     @property
@@ -461,8 +488,369 @@ class Event:
     hashes: Optional[Dict[str, str]] = None
 
 
+class EventFanout:
+    """Broadcasts events to multiple consumers (GUI, Web, console)."""
+    def __init__(self, history_max: int = 1000) -> None:
+        self._subs: List[queue.Queue] = []
+        self._lock = threading.Lock()
+        self.recent: Deque[Event] = deque(maxlen=history_max)
+
+    def register(self) -> "queue.Queue[Event]":
+        q: "queue.Queue[Event]" = queue.Queue()
+        with self._lock:
+            self._subs.append(q)
+        return q
+
+    def put_nowait(self, evt: Event) -> None:
+        self.recent.append(evt)
+        with self._lock:
+            for q in list(self._subs):
+                try:
+                    q.put_nowait(evt)
+                except Exception:
+                    pass
+
+
+# ---------------------------------------------------------------------------
+# Server Thread (Asyncio listener and transfer logic)
+# ---------------------------------------------------------------------------
+
+class ServerThread:
+    """Runs the asynchronous TFTP server in a background thread with proper
+    event fanout and web/UI synchronization.
+    """
+
+    def __init__(self, cfg: ServerConfig, logger: logging.Logger, event_q: "EventFanout"):
+        self.cfg = cfg
+        self.logger = logger
+        self.event_q = event_q
+        self._thread: Optional[threading.Thread] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._transport: Optional[asyncio.transports.DatagramTransport] = None
+        self.is_running: bool = False  # actual server state flag
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _broadcast_server(self, running: bool) -> None:
+        """Send a 'server' event to all subscribers and update .is_running."""
+        self.is_running = running
+        try:
+            evt = Event(
+                kind="server",
+                client=(self.cfg.host, self.cfg.port),
+                filename="",
+                is_write=False,
+                message="running" if running else "stopped",
+            )
+            self.event_q.put_nowait(evt)
+        except Exception:
+            pass
+
+    def _maybe_chroot(self) -> None:
+        """Perform chroot if enabled and running as root."""
+        if not self.cfg.enforce_chroot:
+            return
+        try:
+            validate_root_dir(self.cfg)
+            if hasattr(os, "geteuid") and os.geteuid() != 0:
+                self.logger.warning(
+                    "enforce_chroot requested but not running as root; skipping chroot."
+                )
+                return
+            os.chroot(Path(self.cfg.root_dir))
+            os.chdir("/")
+            self.logger.info("Chrooted to %s", self.cfg.root_dir)
+            self.cfg.root_dir = Path("/")
+        except Exception as exc:
+            self.logger.error("Chroot failed: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Lifecycle methods
+    # ------------------------------------------------------------------
+
+    def start(self) -> None:
+        """Launch the asyncio server loop in a background thread."""
+        if self._thread and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(
+            target=self._run_loop, name="TFTP-Server", daemon=True
+        )
+        self._thread.start()
+
+    def _run_loop(self) -> None:
+        """Main asyncio loop for the TFTP listener and transfers."""
+        try:
+            validate_root_dir(self.cfg)
+            validate_transfer_port_range(self.cfg)
+            self._maybe_chroot()
+
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+
+            listen = self._loop.create_datagram_endpoint(
+                lambda: ListenerProtocol(self.cfg, self.logger, self.event_q),
+                local_addr=(self.cfg.host, self.cfg.port),
+                allow_broadcast=True,
+                reuse_port=False,
+            )
+
+            self._transport, _ = self._loop.run_until_complete(listen)
+
+            # Announce server running
+            self._broadcast_server(True)
+            self.logger.info("Listener bound on %s:%s", self.cfg.host, self.cfg.port)
+
+            self._loop.run_forever()
+
+        except (OSError, ValueError) as exc:
+            self.logger.error("Failed to start server: %s", exc)
+
+        finally:
+            # Always announce stopped
+            self._broadcast_server(False)
+            self.is_running = False
+
+            if self._transport:
+                self._transport.close()
+
+            if self._loop:
+                # Cancel all pending tasks cleanly
+                pending = asyncio.all_tasks(loop=self._loop)
+                for task in pending:
+                    task.cancel()
+                try:
+                    self._loop.run_until_complete(
+                        asyncio.gather(*pending, return_exceptions=True)
+                    )
+                except Exception:
+                    pass
+                self._loop.stop()
+                self._loop.close()
+            self.logger.info("TFTP server loop stopped.")
+
+    def stop(self) -> None:
+        """Stop the TFTP server cleanly."""
+        if self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        self.is_running = False
+        self._broadcast_server(False)
+        if self._thread:
+            self._thread.join(timeout=2)
+            self._thread = None
+        self.logger.info("TFTP server stopped.")
+
+# ---------------------------------------------------------------------------
+# Asyncio listener + per-transfer protocols
+# ---------------------------------------------------------------------------
+
+class ListenerProtocol(asyncio.DatagramProtocol):
+    def __init__(self, cfg: ServerConfig, logger: logging.Logger, event_q: EventFanout):
+        self.cfg = cfg
+        self.logger = logger
+        self.event_q = event_q
+        self.transport: Optional[asyncio.transports.DatagramTransport] = None
+        self.loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        self.transport = transport  # type: ignore
+        self.loop = asyncio.get_event_loop()
+        self.logger.info("Listener bound on %s:%s", self.cfg.host, self.cfg.port)
+
+    def datagram_received(self, data: bytes, addr: Tuple[str, int]) -> None:
+        client_ip = addr[0]
+
+        # Access policy checks
+        if self.cfg.allowlist_ips and not ip_in_list(client_ip, self.cfg.allowlist_ips):
+            self._send_error(addr, ERR_ACCESS_VIOLATION, "Access denied (allowlist)")
+            return
+        if ip_in_list(client_ip, self.cfg.denylist_ips):
+            self._send_error(addr, ERR_ACCESS_VIOLATION, "Access denied (denylist)")
+            return
+
+        try:
+            opcode = struct.unpack("!H", data[:2])[0]
+        except Exception:
+            return
+
+        if opcode not in (OP_RRQ, OP_WRQ):
+            return
+
+        try:
+            opcode, filename, mode, options = parse_rrq_wrq_with_options(data)
+        except Exception:
+            self._send_error(addr, ERR_ILLEGAL_OPERATION, "Malformed RRQ/WRQ")
+            return
+
+        if mode != "octet":
+            self._send_error(addr, ERR_ILLEGAL_OPERATION, "Only octet mode supported")
+            return
+
+        if not ext_allowed(filename, self.cfg.filename_allowlist):
+            self._send_error(addr, ERR_ACCESS_VIOLATION, "Disallowed file type")
+            return
+
+        try:
+            validate_root_dir(self.cfg)
+        except ValueError as e:
+            self._send_error(addr, ERR_ACCESS_VIOLATION, "Server root not configured")
+            self.logger.error(str(e))
+            return
+
+        root_dir = Path(self.cfg.root_dir).expanduser().resolve()
+        path = safe_join(root_dir, filename)
+        if path is None:
+            self._send_error(addr, ERR_ACCESS_VIOLATION, "Access violation")
+            return
+
+        want_blksize = clamp_blksize(int(options.get("blksize", DEFAULT_BLOCK_SIZE)) if "blksize" in options else None)
+        want_tsize = options.get("tsize")
+
+        if opcode == OP_RRQ:  # DOWNLOAD
+            if not path.exists() or not path.is_file():
+                self._send_error(addr, ERR_FILE_NOT_FOUND, "File not found")
+                return
+            try:
+                fh = path.open("rb")
+                total = path.stat().st_size
+            except Exception:
+                self._send_error(addr, ERR_ACCESS_VIOLATION, "Cannot open file")
+                return
+
+            sess = Session(
+                client=addr,
+                mode=mode,
+                file_path=path,
+                is_write=False,
+                fh=fh,
+                total_size=total,
+                block_size=want_blksize,
+                requested_opts=options,
+            )
+            self.loop.create_task(self._spawn_transfer(sess, options, rrq=True))
+
+        elif opcode == OP_WRQ:  # UPLOAD
+            if not self.cfg.allow_write:
+                self._send_error(addr, ERR_ACCESS_VIOLATION, "Writes disabled")
+                return
+
+            # Restrict to writable subdirs if configured
+            if self.cfg.writable_subdirs:
+                ok = False
+                for sub in self.cfg.writable_subdirs:
+                    sub_root = (root_dir / sub).resolve()
+                    try:
+                        path.relative_to(sub_root)
+                        ok = True
+                        break
+                    except Exception:
+                        continue
+                if not ok:
+                    self._send_error(addr, ERR_ACCESS_VIOLATION, "Write not allowed in this path")
+                    return
+
+            if path.exists():
+                self._send_error(addr, ERR_FILE_EXISTS, "File exists")
+                return
+
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                fh = path.open("wb")
+            except Exception:
+                self._send_error(addr, ERR_ACCESS_VIOLATION, "Cannot create file")
+                return
+
+            sess = Session(
+                client=addr,
+                mode=mode,
+                file_path=path,
+                is_write=True,
+                fh=fh,
+                block_size=want_blksize,
+                requested_opts=options,
+            )
+            if want_tsize is not None:
+                try:
+                    sess.expect_size = int(want_tsize)
+                except Exception:
+                    pass
+
+            self.loop.create_task(self._spawn_transfer(sess, options, rrq=False))
+
+    async def _spawn_transfer(self, sess: Session, options: Dict[str, str], rrq: bool) -> None:
+        host = self.cfg.host
+        lo, hi = self.cfg.transfer_port_min, self.cfg.transfer_port_max
+
+        if lo is not None and hi is not None and lo < hi:
+            transport = None
+            last_exc = None
+            for p in range(lo, hi + 1):
+                try:
+                    transport, protocol = await self.loop.create_datagram_endpoint(  # type: ignore
+                        lambda: TransferProtocol(self.cfg, self.logger, self.event_q, sess),
+                        local_addr=(host, p),
+                    )
+                    break
+                except Exception as e:
+                    last_exc = e
+                    continue
+            if transport is None:
+                self.logger.error("No free data port in %s-%s: %s", lo, hi, last_exc)
+                self._send_error(sess.client, ERR_NOT_DEFINED, "No data port")
+                return
+        else:
+            local_addr = (host, 0) if self.cfg.ephemeral_ports else (host, self.cfg.port)
+            transport, protocol = await self.loop.create_datagram_endpoint(  # type: ignore
+                lambda: TransferProtocol(self.cfg, self.logger, self.event_q, sess),
+                local_addr=local_addr,
+            )
+
+        # OACK options
+        oack_opts: Dict[str, str] = {}
+        if "blksize" in options:
+            oack_opts["blksize"] = str(sess.block_size)
+        if rrq and "tsize" in options:
+            oack_opts["tsize"] = str(sess.total_size)
+        if (not rrq) and ("tsize" in options) and sess.expect_size is not None:
+            oack_opts["tsize"] = str(sess.expect_size)
+
+        if rrq:
+            protocol.start_download(oack_opts if oack_opts else None)
+        else:
+            protocol.start_upload(oack_opts if oack_opts else None)
+
+        # Emit start event
+        opts_str = ",".join(f"{k}={v}" for k, v in options.items()) if options else ""
+        self.event_q.put_nowait(
+            Event(
+                kind="start",
+                client=sess.client,
+                filename=sess.file_path.name,
+                is_write=sess.is_write,
+                bytes_done=sess.bytes_done,
+                total_size=sess.total_size or (sess.expect_size or 0),
+                percent=sess.percent,
+                rate_avg=0.0,
+                eta="—",
+                blk=sess.block_size,
+                opts=opts_str,
+                message="Download started" if not sess.is_write else "Upload started",
+            )
+        )
+
+    def _send_error(self, addr: Tuple[str, int], code: int, msg: str) -> None:
+        if self.transport is not None:
+            self.transport.sendto(build_error(code, msg), addr)
+        # Audit error
+        write_audit(
+            self.cfg.audit_log_file,
+            {"ts": time.time(), "event": "error", "client_ip": addr[0], "client_port": addr[1], "code": code, "message": msg},
+        )
+
+
 class TransferProtocol(asyncio.DatagramProtocol):
-    def __init__(self, cfg: ServerConfig, logger: logging.Logger, event_q: "queue.Queue[Event]", sess: Session):
+    def __init__(self, cfg: ServerConfig, logger: logging.Logger, event_q: EventFanout, sess: Session):
         self.cfg = cfg
         self.logger = logger
         self.event_q = event_q
@@ -513,6 +901,7 @@ class TransferProtocol(asyncio.DatagramProtocol):
             opcode = struct.unpack("!H", data[:2])[0]
         except Exception:
             return
+
         if opcode == OP_ACK:
             self._on_ack(data)
         elif opcode == OP_DATA:
@@ -520,6 +909,7 @@ class TransferProtocol(asyncio.DatagramProtocol):
         else:
             self._sendto(build_error(ERR_ILLEGAL_OPERATION, "Illegal TFTP operation"), addr)
 
+    # --- Initiators ---
     def start_download(self, oack: Optional[Dict[str, str]]) -> None:
         if oack:
             self._send_oack(oack)
@@ -532,6 +922,7 @@ class TransferProtocol(asyncio.DatagramProtocol):
         else:
             self._send_ack(0)
 
+    # --- Handlers ---
     def _on_ack(self, data: bytes) -> None:
         s = self.sess
         try:
@@ -539,6 +930,7 @@ class TransferProtocol(asyncio.DatagramProtocol):
         except Exception:
             return
 
+        # First ACK after OACK
         if s.sent_oack and block_no == 0:
             s.sent_oack = False
             if s.is_write:
@@ -547,7 +939,7 @@ class TransferProtocol(asyncio.DatagramProtocol):
             return
 
         if s.is_write:
-            return
+            return  # uploads expect DATA, not ACK
 
         if block_no == s.last_block_sent:
             inc = s.block_size
@@ -557,6 +949,7 @@ class TransferProtocol(asyncio.DatagramProtocol):
                 s.bytes_done += inc
             self._emit_event("progress", f"Sent block {block_no}")
             self._send_block(block_no + 1)
+
             if s.total_size > 0 and s.bytes_done >= s.total_size:
                 self._emit_event("complete", "Download complete")
                 self._end_session()
@@ -570,6 +963,7 @@ class TransferProtocol(asyncio.DatagramProtocol):
             payload = data[4:]
         except Exception:
             return
+
         if not s.fh:
             return
         try:
@@ -584,11 +978,13 @@ class TransferProtocol(asyncio.DatagramProtocol):
         s.bytes_done += len(payload)
         self._emit_event("progress", f"Received block {block_no}")
         self._send_ack(block_no)
+
         if len(payload) < s.block_size:
             hashes = file_hashes(s.file_path)
             self._emit_event("complete", "Upload complete", hashes=hashes)
             self._end_session()
 
+    # --- Senders ---
     def _send_oack(self, options: Dict[str, str]) -> None:
         s = self.sess
         packet = build_oack(options)
@@ -637,340 +1033,84 @@ class TransferProtocol(asyncio.DatagramProtocol):
 
     def _emit_event(self, kind: str, message: str, hashes: Optional[Dict[str, str]] = None) -> None:
         s = self.sess
-        try:
-            avg_rate = s.rate_bps_window(window_sec=self.cfg.metrics_window_sec)
-            eta_txt = fmt_eta(s.eta_seconds(self.cfg.metrics_window_sec))
-            opts_str = ",".join(f"{k}={v}" for k, v in s.requested_opts.items()) if s.requested_opts else ""
-            evt = Event(
-                kind=kind,
-                client=s.client,
-                filename=s.file_path.name,
-                is_write=s.is_write,
-                bytes_done=s.bytes_done,
-                total_size=s.total_size or (s.expect_size or 0),
-                percent=s.percent,
-                rate_avg=avg_rate,
-                eta=eta_txt,
-                blk=s.block_size,
-                opts=opts_str,
-                message=message,
-                hashes=hashes,
-            )
-            self.event_q.put_nowait(evt)
-
-            direction = "UPLOAD" if s.is_write else "DOWNLOAD"
-            self.logger.info(
-                "%s %s %s:%s %s %s/%s avg=%.0fB/s ETA=%s blk=%d opts=%s - %s",
-                kind.upper(), direction, s.client[0], s.client[1], s.file_path.name,
-                s.bytes_done, s.total_size or (s.expect_size or 0), avg_rate, eta_txt,
-                s.block_size, opts_str, message,
-            )
-
-            write_audit(
-                self.cfg.audit_log_file,
-                {
-                    "ts": time.time(),
-                    "event": kind,
-                    "client_ip": s.client[0],
-                    "client_port": s.client[1],
-                    "file": str(s.file_path),
-                    "direction": "upload" if s.is_write else "download",
-                    "bytes_done": s.bytes_done,
-                    "total": s.total_size or (s.expect_size or 0),
-                    "percent": s.percent,
-                    "avg_rate_bps": avg_rate,
-                    "eta": eta_txt,
-                    "blk": s.block_size,
-                    "opts": s.requested_opts,
-                    "hashes": hashes,
-                },
-            )
-
-            if kind in ("start", "complete", "error"):
-                nowiso = datetime.now(timezone.utc).isoformat()
-                md5 = hashes.get("md5") if hashes else ""
-                sha256 = hashes.get("sha256") if hashes else ""
-                status = "ok" if kind == "complete" else ("start" if kind == "start" else "error")
-                duration = time.time() - s.start_time if s.start_time else 0.0
-                write_transfer_log_csv(
-                    self.cfg.transfer_log_file,
-                    {
-                        "timestamp": nowiso,
-                        "client_ip": s.client[0],
-                        "client_port": s.client[1],
-                        "direction": direction.lower(),
-                        "filename": s.file_path.name,
-                        "total_size": s.total_size or (s.expect_size or 0),
-                        "bytes_done": s.bytes_done,
-                        "percent": round(s.percent, 3),
-                        "status": status,
-                        "message": message,
-                        "md5": md5,
-                        "sha256": sha256,
-                        "duration_sec": round(duration, 3),
-                        "avg_rate_bps": round(avg_rate, 1),
-                        "block_size": s.block_size,
-                    },
-                )
-        except Exception:
-            pass
-
-
-class ListenerProtocol(asyncio.DatagramProtocol):
-    def __init__(self, cfg: ServerConfig, logger: logging.Logger, event_q: "queue.Queue[Event]"):
-        self.cfg = cfg
-        self.logger = logger
-        self.event_q = event_q
-        self.transport: Optional[asyncio.transports.DatagramTransport] = None
-        self.loop: Optional[asyncio.AbstractEventLoop] = None
-
-    def connection_made(self, transport: asyncio.BaseTransport) -> None:
-        self.transport = transport  # type: ignore
-        self.loop = asyncio.get_event_loop()
-        self.logger.info("Listener bound on %s:%s", self.cfg.host, self.cfg.port)
-
-    def datagram_received(self, data: bytes, addr: Tuple[str, int]) -> None:
-        client_ip = addr[0]
-        if self.cfg.allowlist_ips and not ip_in_list(client_ip, self.cfg.allowlist_ips):
-            self._send_error(addr, ERR_ACCESS_VIOLATION, "Access denied (allowlist)")
-            return
-        if ip_in_list(client_ip, self.cfg.denylist_ips):
-            self._send_error(addr, ERR_ACCESS_VIOLATION, "Access denied (denylist)")
-            return
-
-        try:
-            opcode = struct.unpack("!H", data[:2])[0]
-        except Exception:
-            return
-        if opcode not in (OP_RRQ, OP_WRQ):
-            return
-
-        try:
-            opcode, filename, mode, options = parse_rrq_wrq_with_options(data)
-        except Exception:
-            self._send_error(addr, ERR_ILLEGAL_OPERATION, "Malformed RRQ/WRQ")
-            return
-
-        if mode != "octet":
-            self._send_error(addr, ERR_ILLEGAL_OPERATION, "Only octet mode supported")
-            return
-
-        if not ext_allowed(filename, self.cfg.filename_allowlist):
-            self._send_error(addr, ERR_ACCESS_VIOLATION, "Disallowed file type")
-            return
-
-        try:
-            validate_root_dir(self.cfg)
-        except ValueError as e:
-            self._send_error(addr, ERR_ACCESS_VIOLATION, "Server root not configured")
-            self.logger.error(str(e))
-            return
-        root_dir = Path(self.cfg.root_dir).expanduser().resolve()
-
-        path = safe_join(root_dir, filename)
-        if path is None:
-            self._send_error(addr, ERR_ACCESS_VIOLATION, "Access violation")
-            return
-
-        want_blksize = clamp_blksize(int(options.get("blksize", DEFAULT_BLOCK_SIZE)) if "blksize" in options else None)
-        want_tsize = options.get("tsize")
-
-        if opcode == OP_RRQ:
-            if not path.exists() or not path.is_file():
-                self._send_error(addr, ERR_FILE_NOT_FOUND, "File not found")
-                return
-            try:
-                fh = path.open("rb")
-                total = path.stat().st_size
-            except Exception:
-                self._send_error(addr, ERR_ACCESS_VIOLATION, "Cannot open file")
-                return
-            sess = Session(
-                client=addr,
-                mode=mode,
-                file_path=path,
-                is_write=False,
-                fh=fh,
-                total_size=total,
-                block_size=want_blksize,
-                requested_opts=options,
-            )
-            self.loop.create_task(self._spawn_transfer(sess, options, rrq=True))
-
-        elif opcode == OP_WRQ:
-            if not self.cfg.allow_write:
-                self._send_error(addr, ERR_ACCESS_VIOLATION, "Writes disabled")
-                return
-            if self.cfg.writable_subdirs:
-                ok = False
-                for sub in self.cfg.writable_subdirs:
-                    sub_root = (root_dir / sub).resolve()
-                    try:
-                        path.relative_to(sub_root)
-                        ok = True
-                        break
-                    except Exception:
-                        continue
-                if not ok:
-                    self._send_error(addr, ERR_ACCESS_VIOLATION, "Write not allowed in this path")
-                    return
-            if path.exists():
-                self._send_error(addr, ERR_FILE_EXISTS, "File exists")
-                return
-            try:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                fh = path.open("wb")
-            except Exception:
-                self._send_error(addr, ERR_ACCESS_VIOLATION, "Cannot create file")
-                return
-            sess = Session(
-                client=addr,
-                mode=mode,
-                file_path=path,
-                is_write=True,
-                fh=fh,
-                block_size=want_blksize,
-                requested_opts=options,
-            )
-            if want_tsize is not None:
-                try:
-                    sess.expect_size = int(want_tsize)
-                except Exception:
-                    pass
-            self.loop.create_task(self._spawn_transfer(sess, options, rrq=False))
-
-    async def _spawn_transfer(self, sess: Session, options: Dict[str, str], rrq: bool) -> None:
-        host = self.cfg.host
-        lo, hi = self.cfg.transfer_port_min, self.cfg.transfer_port_max
-        transport = None
-        protocol = None
-        if lo is not None and hi is not None and lo < hi:
-            last_exc = None
-            for p in range(lo, hi + 1):
-                try:
-                    transport, protocol = await self.loop.create_datagram_endpoint(
-                        lambda: TransferProtocol(self.cfg, self.logger, self.event_q, sess),
-                        local_addr=(host, p),
-                    )
-                    break
-                except Exception as e:
-                    last_exc = e
-                    continue
-            if transport is None:
-                raise OSError(f"No free data port in {lo}-{hi}: {last_exc}")
-        else:
-            local_addr = (host, 0) if self.cfg.ephemeral_ports else (host, self.cfg.port)
-            transport, protocol = await self.loop.create_datagram_endpoint(
-                lambda: TransferProtocol(self.cfg, self.logger, self.event_q, sess),
-                local_addr=local_addr,
-            )
-
-        oack_opts: Dict[str, str] = {}
-        if "blksize" in options:
-            oack_opts["blksize"] = str(sess.block_size)
-        if rrq and "tsize" in options:
-            oack_opts["tsize"] = str(sess.total_size)
-        if (not rrq) and ("tsize" in options) and sess.expect_size is not None:
-            oack_opts["tsize"] = str(sess.expect_size)
-
-        if rrq:
-            protocol.start_download(oack_opts if oack_opts else None)
-        else:
-            protocol.start_upload(oack_opts if oack_opts else None)
-
-        opts_str = ",".join(f"{k}={v}" for k, v in options.items()) if options else ""
+        avg_rate = s.rate_bps_window(window_sec=self.cfg.metrics_window_sec)
+        eta_txt = fmt_eta(s.eta_seconds(self.cfg.metrics_window_sec))
+        opts_str = ",".join(f"{k}={v}" for k, v in s.requested_opts.items()) if s.requested_opts else ""
         evt = Event(
-            kind="start",
-            client=sess.client,
-            filename=sess.file_path.name,
-            is_write=sess.is_write,
-            bytes_done=sess.bytes_done,
-            total_size=sess.total_size or (sess.expect_size or 0),
-            percent=sess.percent,
-            rate_avg=0.0,
-            eta="—",
-            blk=sess.block_size,
+            kind=kind,
+            client=s.client,
+            filename=s.file_path.name,
+            is_write=s.is_write,
+            bytes_done=s.bytes_done,
+            total_size=s.total_size or (s.expect_size or 0),
+            percent=s.percent,
+            rate_avg=avg_rate,
+            eta=eta_txt,
+            blk=s.block_size,
             opts=opts_str,
-            message="Download started" if not sess.is_write else "Upload started",
+            message=message,
+            hashes=hashes,
         )
         self.event_q.put_nowait(evt)
 
-    def _send_error(self, addr: Tuple[str, int], code: int, msg: str) -> None:
-        if self.transport is not None:
-            self.transport.sendto(build_error(code, msg), addr)
-        write_audit(
-            self.cfg.audit_log_file,
-            {"ts": time.time(), "event": "error", "client_ip": addr[0], "client_port": addr[1], "code": code, "message": msg},
+        # Structured log + audit + transfer CSV
+        direction = "UPLOAD" if s.is_write else "DOWNLOAD"
+        self.logger.info(
+            "%s %s %s:%s %s %s/%s avg=%.0fB/s ETA=%s blk=%d opts=%s - %s",
+            kind.upper(), direction, s.client[0], s.client[1], s.file_path.name,
+            s.bytes_done, s.total_size or (s.expect_size or 0), avg_rate, eta_txt,
+            s.block_size, opts_str, message,
         )
 
+        write_audit(
+            self.cfg.audit_log_file,
+            {
+                "ts": time.time(),
+                "event": kind,
+                "client_ip": s.client[0],
+                "client_port": s.client[1],
+                "file": str(s.file_path),
+                "direction": "upload" if s.is_write else "download",
+                "bytes_done": s.bytes_done,
+                "total": s.total_size or (s.expect_size or 0),
+                "percent": s.percent,
+                "avg_rate_bps": avg_rate,
+                "eta": eta_txt,
+                "blk": s.block_size,
+                "opts": s.requested_opts,
+                "hashes": hashes,
+            },
+        )
 
-class ServerThread:
-    def __init__(self, cfg: ServerConfig, logger: logging.Logger, event_q: "queue.Queue[Event]"):
-        self.cfg = cfg
-        self.logger = logger
-        self.event_q = event_q
-        self._thread: Optional[threading.Thread] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._transport: Optional[asyncio.transports.DatagramTransport] = None
-
-    def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
-        self._thread = threading.Thread(target=self._run_loop, name="TFTP-Server", daemon=True)
-        self._thread.start()
-
-    def _maybe_chroot(self) -> None:
-        if not self.cfg.enforce_chroot:
-            return
-        try:
-            validate_root_dir(self.cfg)
-            if hasattr(os, "geteuid") and os.geteuid() != 0:
-                self.logger.warning("enforce_chroot requested but not running as root; continuing without chroot.")
-                return
-            os.chroot(Path(self.cfg.root_dir))
-            os.chdir("/")
-            self.logger.info("Chrooted to %s", self.cfg.root_dir)
-            self.cfg.root_dir = Path("/")
-        except Exception as exc:
-            self.logger.error("Chroot failed: %s", exc)
-
-    def _run_loop(self) -> None:
-        try:
-            validate_root_dir(self.cfg)
-            validate_transfer_port_range(self.cfg)
-            self._maybe_chroot()
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
-            listen = self._loop.create_datagram_endpoint(
-                lambda: ListenerProtocol(self.cfg, self.logger, self.event_q),
-                local_addr=(self.cfg.host, self.cfg.port),
-                allow_broadcast=True,
-                reuse_port=False,
+        if kind in ("start", "complete", "error"):
+            nowiso = datetime.now(timezone.utc).isoformat()
+            md5 = hashes.get("md5") if hashes else ""
+            sha256 = hashes.get("sha256") if hashes else ""
+            status = "ok" if kind == "complete" else ("start" if kind == "start" else "error")
+            duration = time.time() - s.start_time if s.start_time else 0.0
+            write_transfer_log_csv(
+                self.cfg.transfer_log_file,
+                {
+                    "timestamp": nowiso,
+                    "client_ip": s.client[0],
+                    "client_port": s.client[1],
+                    "direction": direction.lower(),
+                    "filename": s.file_path.name,
+                    "total_size": s.total_size or (s.expect_size or 0),
+                    "bytes_done": s.bytes_done,
+                    "percent": round(s.percent, 3),
+                    "status": status,
+                    "message": message,
+                    "md5": md5,
+                    "sha256": sha256,
+                    "duration_sec": round(duration, 3),
+                    "avg_rate_bps": round(avg_rate, 1),
+                    "block_size": s.block_size,
+                },
             )
-            self._transport, _ = self._loop.run_until_complete(listen)
-            self._loop.run_forever()
-        except (OSError, ValueError) as exc:
-            self.logger.error("Failed to start server: %s", exc)
-        finally:
-            if self._transport:
-                self._transport.close()
-            if self._loop:
-                pending = asyncio.all_tasks(loop=self._loop)
-                for task in pending:
-                    task.cancel()
-                try:
-                    self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                except Exception:
-                    pass
-                self._loop.stop()
-                self._loop.close()
-
-    def stop(self) -> None:
-        if self._loop and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._loop.stop)
-        if self._thread:
-            self._thread.join(timeout=2)
-
+# ---------------------------------------------------------------------------
+# GUI log handler (writes logs into ScrolledText)
+# ---------------------------------------------------------------------------
 
 class TextHandler(logging.Handler):
     def __init__(self, widget: ScrolledText):
@@ -989,22 +1129,37 @@ class TextHandler(logging.Handler):
         except Exception:
             return
 
-# --- Headless-safe Tk base selection ---
+
+# --- Headless-safe Tk base selection ----------------------------------------
 if tk is None:
-    class _TkBase:  # minimal base when Tkinter is unavailable (e.g., in Docker)
-        pass
+    class _TkBase:
+        def __init__(self, *args, **kwargs) -> None: ...
+        def mainloop(self) -> None: ...
+        def protocol(self, *args, **kwargs) -> None: ...
+        def after(self, *args, **kwargs): return None
+        def after_cancel(self, *args, **kwargs) -> None: ...
+        def destroy(self) -> None: ...
+        def title(self, *args, **kwargs) -> None: ...
+        def geometry(self, *args, **kwargs) -> None: ...
+        def config(self, *args, **kwargs) -> None: ...
 else:
     _TkBase = tk.Tk
 
 
+# ---------------------------------------------------------------------------
+# Tk GUI application
+# ---------------------------------------------------------------------------
+
 class TFTPApp(_TkBase):  # type: ignore
     """Tkinter GUI application for configuring and running the TFTP server."""
 
-    def __init__(self, cfg: ServerConfig):
+    def __init__(self, cfg: ServerConfig, start_web: bool = False):
         super().__init__()
+        self._start_web = bool(start_web)
+        self.cfg = cfg
+
         self.title(f"TFTP Server Python3 -- Version {VERSION} {__author__}")
         self.geometry("1280x800")
-        self.cfg = cfg
         self._closing = False
         self._poll_after_id: Optional[str] = None
 
@@ -1014,8 +1169,10 @@ class TFTPApp(_TkBase):  # type: ignore
         self.logger.setLevel(getattr(logging, cfg.log_level.upper(), logging.INFO))
         self._setup_logging()
 
-        self.event_q: "queue.Queue[Event]" = queue.Queue()
-        self.server_thread = ServerThread(self.cfg, self.logger, self.event_q)
+        # Event fanout: GUI subscribes; server publishes to the fanout
+        self._fanout = EventFanout()
+        self.event_q: "queue.Queue[Event]" = self._fanout.register()
+        self.server_thread = ServerThread(self.cfg, self.logger, self._fanout)
         self.running = False
 
         self._build_widgets()
@@ -1025,11 +1182,63 @@ class TFTPApp(_TkBase):  # type: ignore
         self._schedule_poll()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
+        # Optionally launch the Web UI within GUI mode
+        if self._start_web and FastAPI is not None:
+            try:
+                app_web = create_web_app(self.cfg, self._fanout, self.server_thread)
+                threading.Thread(
+                    target=run_web,
+                    args=(
+                        app_web,
+                        str(self.cfg.web.get("host", "0.0.0.0")),
+                        int(self.cfg.web.get("port", 8080)),
+                    ),
+                    name="TFTP-Web",
+                    daemon=True,
+                ).start()
+                print(f"Web UI starting on {self.cfg.web.get('host', '0.0.0.0')}:{self.cfg.web.get('port', 8080)}")
+            except Exception as e:
+                print(f"Web UI failed to start: {e}")
+
+    # ---- Menus --------------------------------------------------------------
+
+    def _build_menubar(self) -> None:
+        menubar = tk.Menu(self)
+
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="Reload Config", command=self._load_config_file)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.on_close)
+        menubar.add_cascade(label="File", menu=file_menu)
+
+        help_menu = tk.Menu(menubar, tearoff=0)
+        help_menu.add_command(label="About…", command=self._show_about)
+        menubar.add_cascade(label="Help", menu=help_menu)
+
+        self.config(menu=menubar)
+
+    def _show_about(self) -> None:
+        try:
+            messagebox.showinfo(
+                "About TFTP Server",
+                (
+                    "TFTP Server Python3\n\n"
+                    f"Version: {VERSION}\n"
+                    f"Author: {__author__}\n\n"
+                    "https://github.com/rjsears/tftpgui"
+                ),
+            )
+        except Exception:
+            print(f"TFTP Server Python3 - Version {VERSION} - Author: {__author__}")
+
+    # ---- Logging wiring -----------------------------------------------------
+
     def _setup_logging(self) -> None:
         self.log_text = ScrolledText(self, state="disabled", height=12, wrap="word")
         handler = TextHandler(self.log_text)
         formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S")
         handler.setFormatter(formatter)
+
         root_logger = logging.getLogger()
         for h in list(root_logger.handlers):
             root_logger.removeHandler(h)
@@ -1049,48 +1258,22 @@ class TFTPApp(_TkBase):  # type: ignore
                     )
                 else:
                     fhandler = RotatingFileHandler(
-                        self.cfg.log_file, maxBytes=self.cfg.log_max_bytes, backupCount=self.cfg.log_backup_count, encoding="utf-8"
+                        self.cfg.log_file,
+                        maxBytes=self.cfg.log_max_bytes,
+                        backupCount=self.cfg.log_backup_count,
+                        encoding="utf-8",
                     )
                 fhandler.setFormatter(formatter)
                 root_logger.addHandler(fhandler)
             except Exception as exc:
                 print(f"Logging: failed to attach file logger: {exc}")
 
-    def _build_menubar(self) -> None:
-        """Create the application menubar with File and Help menus."""
-        menubar = tk.Menu(self)
-
-        file_menu = tk.Menu(menubar, tearoff=0)
-        file_menu.add_command(label="Reload Config", command=self._load_config_file)
-        file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.on_close)
-        menubar.add_cascade(label="File", menu=file_menu)
-
-        help_menu = tk.Menu(menubar, tearoff=0)
-        help_menu.add_command(label="About…", command=self._show_about)
-        menubar.add_cascade(label="Help", menu=help_menu)
-
-        self.config(menu=menubar)
-
-    def _show_about(self) -> None:
-        """Display version/author information."""
-        try:
-            messagebox.showinfo(
-                "About TFTP Server",
-                (
-                    "TFTP Server Python3\n\n"
-                    f"Version: {VERSION}\n"
-                    f"Author: {__author__}\n\n"
-                    "https://github.com/rjsears/tftpgui"
-                ),
-            )
-        except Exception:
-            print(f"TFTP Server Python3 - Version {VERSION} - Author: {__author__}")
+    # ---- Widgets ------------------------------------------------------------
 
     def _build_widgets(self) -> None:
         pad = {"padx": 6, "pady": 6}
 
-        # Colored status banner (Option A palette)
+        # Colored status banner
         self.banner_label = tk.Label(self, text="Server stopped", fg="white", bg="darkred", anchor="center")
         self.banner_label.pack(fill="x")
 
@@ -1226,16 +1409,14 @@ class TFTPApp(_TkBase):  # type: ignore
         self.columnconfigure(0, weight=1)
         self._rows: Dict[Tuple[str, int, str, bool], str] = {}
 
-    # ------- Banner helpers (Option A palette) -------
+    # ------- Banner helpers -------
     def _set_banner(self, text: str, bg: str) -> None:
-        """Update the banner with given text and background color."""
         try:
             self.banner_label.config(text=text, bg=bg)
         except Exception:
             pass
 
     def _update_banner(self) -> None:
-        """Refresh banner based on server state and config validity."""
         try:
             validate_root_dir(self.cfg)
             if self.running:
@@ -1263,6 +1444,13 @@ class TFTPApp(_TkBase):  # type: ignore
                 self._schedule_poll()
 
     def _process_event(self, evt: Event) -> None:
+        if evt.kind == "server":
+            running = (evt.message == "running")
+            self.running = running
+            self._update_banner()
+            self._update_buttons()
+            return
+
         key = (evt.client[0], evt.client[1], evt.filename, evt.is_write)
         iid = self._rows.get(key)
         direction = "UPLOAD" if evt.is_write else "DOWNLOAD"
@@ -1356,7 +1544,7 @@ class TFTPApp(_TkBase):  # type: ignore
 
             self._setup_logging()
 
-            self.server_thread = ServerThread(self.cfg, self.logger, self.event_q)
+            self.server_thread = ServerThread(self.cfg, self.logger, self._fanout)
             self.server_thread.start()
             self.running = True
             self.status.set(f"Running on {self.cfg.host}:{self.cfg.port} — Root: {self.cfg.root_dir}")
@@ -1403,7 +1591,7 @@ class TFTPApp(_TkBase):  # type: ignore
     def _load_config_file(self) -> None:
         try:
             path = self.cfg.config_file if self.cfg.config_file else resolve_config_path()
-            data = json.loads(path.read_text())
+            data = json.loads(path.read_text(encoding="utf-8"))
             loaded = ServerConfig.from_json(data)
             loaded.config_file = path
             self.cfg = loaded
@@ -1436,9 +1624,7 @@ class TFTPApp(_TkBase):  # type: ignore
             self._update_buttons()
 
     def _save_config_file(self) -> None:
-        """Persist current GUI fields back to the JSON config on disk."""
         try:
-            # Values editable from the GUI
             self.cfg.host = self.host_var.get().strip() or "0.0.0.0"
             self.cfg.port = int(self.port_var.get())
             self.cfg.allow_write = bool(self.write_var.get())
@@ -1468,19 +1654,14 @@ class TFTPApp(_TkBase):  # type: ignore
             self.cfg.metrics_window_sec = int(self.window_var.get())
             self.cfg.ephemeral_ports = bool(self.ephemeral_var.get())
 
-            # NOTE: root_dir is intentionally edited in the JSON file, not via GUI field.
-            # Save to disk
-            from pathlib import Path as _Path  # ensure type
             save_config(self.cfg)
             try:
-                from tkinter import messagebox as _mb
-                _mb.showinfo("Saved", f"Config saved to {self.cfg.config_file}")
+                messagebox.showinfo("Saved", f"Config saved to {self.cfg.config_file}")
             except Exception:
                 print(f"Config saved to {self.cfg.config_file}")
         except Exception as exc:
             try:
-                from tkinter import messagebox as _mb
-                _mb.showerror("Save Failed", str(exc))
+                messagebox.showerror("Save Failed", str(exc))
             except Exception:
                 print(f"Save Failed: {exc}")
         finally:
@@ -1488,15 +1669,261 @@ class TFTPApp(_TkBase):  # type: ignore
             self._update_buttons()
 
 
+# ---------------------------------------------------------------------------
+# Root logger setup (headless mode)
+# ---------------------------------------------------------------------------
+
 def configure_root_logging(cfg: ServerConfig) -> None:
-    logging.basicConfig(level=getattr(logging, cfg.log_level.upper(), logging.INFO), format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+    logging.basicConfig(
+        level=getattr(logging, cfg.log_level.upper(), logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
     if cfg.log_file:
         try:
             cfg.log_file.parent.mkdir(parents=True, exist_ok=True)
             if cfg.log_rotation == "time":
-                fh = TimedRotatingFileHandler(cfg.log_file, when=cfg.log_when, interval=cfg.log_interval, backupCount=cfg.log_backup_count, encoding="utf-8")
+                fh = TimedRotatingFileHandler(
+                    cfg.log_file,
+                    when=cfg.log_when,
+                    interval=cfg.log_interval,
+                    backupCount=cfg.log_backup_count,
+                    encoding="utf-8",
+                )
             else:
-                fh = RotatingFileHandler(cfg.log_file, maxBytes=cfg.log_max_bytes, backupCount=cfg.log_backup_count, encoding="utf-8")
+                fh = RotatingFileHandler(
+                    cfg.log_file, maxBytes=cfg.log_max_bytes, backupCount=cfg.log_backup_count, encoding="utf-8"
+                )
+            fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S"))
+            logging.getLogger().addHandler(fh)
+        except Exception as exc:
+            print(f"Logging attach failed: {exc}")
+# ---------------------------------------------------------------------------
+# Web UI (FastAPI) - optional
+# ---------------------------------------------------------------------------
+
+DASHBOARD_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TFTP Server Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,'Helvetica Neue',Arial,sans-serif;margin:0;background:#0b1020;color:#e9eef8}
+  header{padding:12px 16px;background:#0f1530;border-bottom:1px solid #1a2347}
+  .banner{padding:10px 14px;text-align:center;font-weight:600}
+  .banner.ok{background:#0f3d0f;color:#e6ffe6}
+  .banner.bad{background:#6b1111;color:#fff}
+  .wrap{max-width:1100px;margin:18px auto;padding:0 16px}
+  table{border-collapse:collapse;width:100%;background:#111833;border:1px solid #1f2a55}
+  th,td{padding:8px 10px;border-bottom:1px solid #1f2a55}
+  th{background:#0f1733;text-align:left}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
+  .muted{opacity:.8}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#203066}
+  .right{float:right}
+</style>
+</head>
+<body>
+<header>
+  <div id="topline">
+    <strong>TFTP Server</strong>
+    <span id="subtitle" class="muted"></span>
+    <span class="right muted"><a href="/api/status" style="color:#9fb7ff;text-decoration:none">/api/status</a></span>
+  </div>
+</header>
+<div id="banner" class="banner bad">Server stopped</div>
+
+<div class="wrap">
+  <h3>Active & Recent Transfers</h3>
+  <table id="tbl">
+    <thead>
+      <tr>
+        <th>Client</th>
+        <th>Dir</th>
+        <th>File</th>
+        <th>Blk</th>
+        <th>Opts</th>
+        <th>Progress</th>
+        <th>Bytes</th>
+        <th>Avg (B/s)</th>
+        <th>ETA</th>
+        <th>Status</th>
+        <th>Hashes</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<script>
+const banner = document.getElementById('banner');
+const subtitle = document.getElementById('subtitle');
+const tbody = document.querySelector('#tbl tbody');
+
+function setBanner(running, host, port){
+  banner.textContent = running ? `Server running on ${host}:${port}` : 'Server stopped';
+  banner.className = 'banner ' + (running ? 'ok' : 'bad');
+}
+
+function refreshStatus(){
+  fetch('/api/status').then(r=>r.json()).then(s=>{
+    setBanner(!!s.running, s.host, s.port);
+    subtitle.textContent = ` root: ${s.root_dir}`;
+  }).catch(()=>{});
+}
+
+function up(evt){
+  const key = `${evt.client[0]}:${evt.client[1]}|${evt.filename}|${evt.is_write}`;
+  let tr = document.querySelector(`tr[data-key="${key}"]`);
+  const direction = evt.is_write ? 'UPLOAD' : 'DOWNLOAD';
+  const hashes = evt.hashes ? `md5=${evt.hashes.md5||''} sha256=${evt.hashes.sha256||''}` : '';
+  const progress = evt.total_size > 0 ? `${evt.percent.toFixed(1)}%` : '—';
+  const bytes = `${evt.bytes_done}/${evt.total_size||0}`;
+  const values = [
+    `${evt.client[0]}:${evt.client[1]}`,
+    direction,
+    evt.filename,
+    evt.blk,
+    evt.opts || '',
+    progress,
+    bytes,
+    Math.round(evt.rate_avg).toString(),
+    evt.eta || '—',
+    `${evt.kind}: ${evt.message||''}`,
+    hashes
+  ];
+  if(!tr){
+    tr = document.createElement('tr');
+    tr.setAttribute('data-key', key);
+    values.forEach(v=>{
+      const td = document.createElement('td');
+      td.textContent = v;
+      tr.appendChild(td);
+    });
+    tbody.prepend(tr);
+  }else{
+    Array.from(tr.children).forEach((td, i)=> td.textContent = values[i]);
+  }
+}
+
+function connectSSE(){
+  const es = new EventSource('/api/events');
+  es.onmessage = (ev)=>{
+    try{
+      const evt = JSON.parse(ev.data);
+      if(evt.kind === 'server'){
+        const running = evt.message === 'running';
+        setBanner(running, evt.client[0], evt.client[1]);
+        return;
+      }
+      up(evt);
+    }catch(e){}
+  };
+  es.onerror = ()=>{ setTimeout(connectSSE, 1500); };
+}
+
+refreshStatus();
+setInterval(refreshStatus, 2000);
+connectSSE();
+</script>
+</body>
+</html>
+"""
+
+def create_web_app(cfg: ServerConfig, fanout: EventFanout, server: "ServerThread"):
+    if FastAPI is None:
+        raise RuntimeError("FastAPI is not installed")
+
+    app = FastAPI(title="TFTP Server UI", version=VERSION)
+
+    @app.get("/", response_class=HTMLResponse)
+    def index():
+        return DASHBOARD_HTML
+
+    @app.get("/api/status", response_class=JSONResponse)
+    def api_status():
+        return {
+            "running": bool(getattr(server, "is_running", False)),
+            "host": str(cfg.host),
+            "port": int(cfg.port),
+            "root_dir": str(cfg.root_dir),
+            "metrics_window_sec": int(cfg.metrics_window_sec),
+            "allow_write": bool(cfg.allow_write),
+            "ephemeral_ports": bool(cfg.ephemeral_ports),
+        }
+
+    @app.get("/api/events")
+    def api_events():
+        # Server-Sent Events stream of recent + future events
+        async def gen():
+            # 1) replay recent buffered
+            for e in list(fanout.recent):
+                yield f"data: {json.dumps(_event_to_json(e))}\n\n"
+            # 2) live tail
+            q = fanout.register()
+            try:
+                while True:
+                    e = await asyncio.get_event_loop().run_in_executor(None, q.get)
+                    yield f"data: {json.dumps(_event_to_json(e))}\n\n"
+            except asyncio.CancelledError:
+                return
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    return app
+
+
+def _event_to_json(e: Event) -> dict:
+    return {
+        "kind": e.kind,
+        "client": [e.client[0], e.client[1]],
+        "filename": e.filename,
+        "is_write": e.is_write,
+        "bytes_done": e.bytes_done,
+        "total_size": e.total_size,
+        "percent": e.percent,
+        "rate_avg": e.rate_avg,
+        "eta": e.eta,
+        "blk": e.blk,
+        "opts": e.opts,
+        "message": e.message,
+        "hashes": e.hashes or {},
+    }
+
+
+def run_web(app, host: str, port: int) -> None:
+    if uvicorn is None:
+        raise RuntimeError("uvicorn not installed")
+    uvicorn.run(app, host=host, port=port, log_level="info")
+
+
+# ---------------------------------------------------------------------------
+# CLI + entrypoint
+# ---------------------------------------------------------------------------
+
+def configure_root_logging(cfg: ServerConfig) -> None:
+    """(Re-declared here in case module order shifts)"""
+    logging.basicConfig(
+        level=getattr(logging, cfg.log_level.upper(), logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    if cfg.log_file:
+        try:
+            cfg.log_file.parent.mkdir(parents=True, exist_ok=True)
+            if cfg.log_rotation == "time":
+                fh = TimedRotatingFileHandler(
+                    cfg.log_file,
+                    when=cfg.log_when,
+                    interval=cfg.log_interval,
+                    backupCount=cfg.log_backup_count,
+                    encoding="utf-8",
+                )
+            else:
+                fh = RotatingFileHandler(
+                    cfg.log_file, maxBytes=cfg.log_max_bytes, backupCount=cfg.log_backup_count, encoding="utf-8"
+                )
             fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S"))
             logging.getLogger().addHandler(fh)
         except Exception as exc:
@@ -1505,17 +1932,12 @@ def configure_root_logging(cfg: ServerConfig) -> None:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Tkinter TFTP server with progress, audit, and CSV transfer logging."
+        description="Tkinter TFTP server with progress, audit, CSV transfer logging, and optional web UI."
     )
-    p.add_argument(
-        "--config", "-c",
-        help="Path to a config JSON file to use/initialize."
-    )
-    p.add_argument(
-        "--headless",
-        action="store_true",
-        help="Run in server-only mode without launching the GUI"
-    )
+    p.add_argument("--config", "-c", help="Path to a config JSON file to use/initialize.")
+    p.add_argument("--headless", action="store_true", help="Run in server-only mode without launching the GUI.")
+    p.add_argument("--web", "-w", action="store_true", help="Start the built-in web UI.")
+    p.add_argument("--web-port", "-p", type=int, help="Override the web UI port (default from config).")
     return p.parse_args()
 
 
@@ -1524,10 +1946,13 @@ def main() -> None:
     cfg_path = resolve_config_path(args.config)
     cfg = load_config(cfg_path)
 
-    # Run headless if either:
-    #  - Tk is unavailable (container/headless env), OR
-    #  - the user explicitly requested --headless
-    if (tk is None) or getattr(args, "headless", False):
+    # derive desired web state
+    start_web = bool(args.web or cfg.web.get("enabled", False))
+    if args.web_port is not None:
+        cfg.web["port"] = int(args.web_port)
+
+    # HEADLESS if Tk is missing or --headless requested
+    if (tk is None) or bool(args.headless):
         try:
             validate_root_dir(cfg)
             validate_transfer_port_range(cfg)
@@ -1538,14 +1963,39 @@ def main() -> None:
 
         configure_root_logging(cfg)
         logger = logging.getLogger("tftpgui")
-        event_q: "queue.Queue[Event]" = queue.Queue()
-        server = ServerThread(cfg, logger, event_q)
+        fanout = EventFanout()
+        print_q = fanout.register()
+
+        server = ServerThread(cfg, logger, fanout)
         server.start()
+
+        # Optionally run web UI
+        if start_web and FastAPI is not None:
+            try:
+                app_web = create_web_app(cfg, fanout, server)
+                threading.Thread(
+                    target=run_web,
+                    args=(app_web, str(cfg.web.get("host", "0.0.0.0")), int(cfg.web.get("port", 8080))),
+                    name="TFTP-Web",
+                    daemon=True,
+                ).start()
+                print(f"Web UI starting on {cfg.web.get('host', '0.0.0.0')}:{cfg.web.get('port', 8080)}")
+            except Exception as e:
+                print(f"Web UI failed to start: {e}")
+        elif start_web and FastAPI is None:
+            print("Web UI requested but FastAPI/uvicorn not installed.")
+
         print(f"TFTP server running with config: {cfg.config_file}. Press Ctrl+C to stop.")
         try:
             while True:
                 try:
-                    evt = event_q.get(timeout=0.5)
+                    evt = print_q.get(timeout=0.5)
+                    if evt.kind == "server":
+                        # status line
+                        running = (evt.message == "running")
+                        state = "RUNNING" if running else "STOPPED"
+                        print(f"[server] {state} on {evt.client[0]}:{evt.client[1]}")
+                        continue
                     direction = "UPLOAD" if evt.is_write else "DOWNLOAD"
                     prog_txt = f"{evt.percent:.1f}%" if evt.total_size > 0 else "—"
                     hashes = ""
@@ -1564,7 +2014,7 @@ def main() -> None:
         return
 
     # GUI mode (Tk available and --headless not set)
-    app = TFTPApp(cfg)
+    app = TFTPApp(cfg, start_web=start_web)
     app.mainloop()
     try:
         app.stop_server()
