@@ -1,6 +1,6 @@
 <div align="center">
 
-  ## TFTPGui – A Modern GUI & Headless TFTP Server in Python3 (v1.1.4)
+  ## TFTPGui – A Modern GUI & Headless TFTP Server in Python3 (v1.1.5)
 
   
 ![Last Commit](https://img.shields.io/github/last-commit/rjsears/tftpgui)
@@ -356,34 +356,40 @@ Here’s an example `container.tftpgui_config.json` you can mount:
 {
   "host": "0.0.0.0",
   "port": 1069,
-  "transfer_port_min": 50000,
-  "transfer_port_max": 50100,
   "root_dir": "/data",
 
-  "allow_write": true,
-  "writable_subdirs": ["uploads", "staging"],
+  "allow_write": false,
+  "writable_subdirs": [],
   "enforce_chroot": false,
 
-  "filename_allowlist": [".bin", ".cfg", ".hex"],
+  "filename_allowlist": [],
   "allowlist_ips": ["192.168.0.0/24", "10.200.50.0/24"],
-  "denylist_ips": [],
+  "denylist_ips": ["10.200.66.0/24"],
 
   "timeout_sec": 3.0,
   "max_retries": 5,
   "log_level": "INFO",
 
-  "log_file": "/logs/tftpgui.log",
-  "audit_log_file": "/logs/audit.jsonl",
-  "transfer_log_file": "/logs/transfers.csv",
-
-  "metrics_window_sec": 5,
-  "ephemeral_ports": true,
+  "log_file": "/logs/tftpd.log",
+  "audit_log_file": "/logs/tftpd.audit.log",
+  "transfer_log_file": "/logs/tftpd.log.csv",
 
   "log_rotation": "size",
   "log_max_bytes": 5000000,
   "log_backup_count": 5,
   "log_when": "midnight",
-  "log_interval": 1
+  "log_interval": 1,
+
+  "metrics_window_sec": 5,
+  "ephemeral_ports": false,
+  "transfer_port_min": 50000,
+  "transfer_port_max": 50100,
+
+    "web": {
+    "enabled": true,
+    "host": "0.0.0.0",
+    "port": 8080
+  }
 }
 ```
 
@@ -398,30 +404,38 @@ Here’s an example `host.tftpgui_config.json` you can mount:
   "port": 69,
   "root_dir": "/data",
 
-  "allow_write": true,
-  "writable_subdirs": ["uploads", "staging"],
+  "allow_write": false,
+  "writable_subdirs": [],
   "enforce_chroot": false,
 
-  "filename_allowlist": [".bin", ".cfg", ".hex"],
-  "allowlist_ips": ["127.0.0.1/32", "::1/128", "192.168.0.0/24", "10.200.50.0/24"],
-  "denylist_ips": [],
+  "filename_allowlist": [],
+  "allowlist_ips": ["192.168.0.0/24", "10.200.50.0/24"],
+  "denylist_ips": ["10.200.66.0/24"],
 
   "timeout_sec": 3.0,
   "max_retries": 5,
   "log_level": "INFO",
 
-  "log_file": "/logs/tftpgui.log",
-  "audit_log_file": "/logs/audit.jsonl",
-  "transfer_log_file": "/logs/transfers.csv",
-
-  "metrics_window_sec": 5,
-  "ephemeral_ports": true,
+  "log_file": "/logs/tftpd.log",
+  "audit_log_file": "/logs/tftpd.audit.log",
+  "transfer_log_file": "/logs/tftpd.log.csv",
 
   "log_rotation": "size",
   "log_max_bytes": 5000000,
   "log_backup_count": 5,
   "log_when": "midnight",
-  "log_interval": 1
+  "log_interval": 1,
+
+  "metrics_window_sec": 5,
+  "ephemeral_ports": false,
+  "transfer_port_min": 50000,
+  "transfer_port_max": 50100,
+
+    "web": {
+    "enabled": true,
+    "host": "0.0.0.0",
+    "port": 8080
+  }
 }
 ```
 
@@ -491,7 +505,6 @@ Some future improvements already under consideration:
 * Dark mode / theming
 * System tray integration
 * Built-in TFTP client tester
-* Optional web UI
 * Service install script
 
 ---
