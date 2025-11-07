@@ -1,6 +1,6 @@
 <div align="center">
 
-  ## TFTPGui – A Modern GUI & Headless TFTP Server in Python3 (v1.1.5)
+  ## TFTPGui – A Modern GUI & Headless TFTP Server in Python3 (v1.1.6)
 
   
 ![Last Commit](https://img.shields.io/github/last-commit/rjsears/tftpgui)
