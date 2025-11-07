@@ -21,7 +21,7 @@ CLI:
 """
 
 __author__ = "Richard J. Sears"
-VERSION = "1.1.5 (2025-11-04)"
+VERSION = "1.1.6 (2025-11-07)"
 
 import argparse
 import asyncio
@@ -1207,8 +1207,15 @@ class TFTPApp(_TkBase):  # type: ignore
                     )
                     self.web_thread.start()
                     print(f"Web UI starting on {web_host}:{web_port}")
+                else:
+                    print("Web UI requested but uvicorn not installed.")
             except Exception as e:
                 print(f"Web UI failed to start: {e}")
+                import traceback
+                traceback.print_exc()
+        elif self._start_web and FastAPI is None:
+            print("Web UI requested but FastAPI/uvicorn not installed.")
+            print("Install with: pip3 install 'fastapi>=0.104.0' 'uvicorn[standard]>=0.24.0'")
 
     # ---- Menus --------------------------------------------------------------
 
@@ -2015,8 +2022,11 @@ def main() -> None:
                 print(f"Web UI starting on {cfg.web.get('host', '0.0.0.0')}:{cfg.web.get('port', 8080)}")
             except Exception as e:
                 print(f"Web UI failed to start: {e}")
+                import traceback
+                traceback.print_exc()
         elif start_web and FastAPI is None:
             print("Web UI requested but FastAPI/uvicorn not installed.")
+            print("Install with: pip3 install 'fastapi>=0.104.0' 'uvicorn[standard]>=0.24.0'")
 
         print(f"TFTP server running with config: {cfg.config_file}. Press Ctrl+C to stop.")
         try:
