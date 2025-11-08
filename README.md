@@ -57,6 +57,14 @@ sudo apt-get update
 sudo apt-get install python3 python3-tk
 ````
 
+You will need these as well if not already installed:
+
+```
+# Core web interface dependencies for Web UI
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+```
+
 ---
 
 ## Installation
@@ -73,12 +81,6 @@ cd tftpgui
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-```
-
-```
-# Core web interface dependencies
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
 ```
 ---
 
@@ -216,7 +218,7 @@ The container is built to run in **headless mode** (no GUI), perfect for lab ser
 ### Pull the image
 
 ```bash
-docker pull rjsears/tftpgui:1.1.5
+docker pull rjsears/tftpgui:1.1.6
 ````
 
 Or always grab the newest build:
@@ -234,7 +236,7 @@ docker run --rm -it --network host --user 0:0 \
   -v /home/crypto/tftp:/data \
   -v /home/crypto/.tftpgui_config.json:/app/.tftpgui_config.json:ro \
   -v /home/crypto/tftpgui/logs:/logs \
-  rjsears/tftpgui:1.1.5
+  rjsears/tftpgui:1.1.6
 ```
 ### Quick run with host networking (Linux only, allow low prots for unprivileged (per-run sysctl))
 
@@ -244,7 +246,7 @@ docker run --rm -it --network host \
   -v /home/crypto/tftp:/data \
   -v /home/crypto/.tftpgui_config.json:/app/.tftpgui_config.json:ro \
   -v /home/crypto/tftpgui/logs:/logs \
-  rjsears/tftpgui:1.1.5
+  rjsears/tftpgui:1.1.6
 ```
 
 These use your host’s network stack directly, so you don’t have to map UDP ports.
@@ -260,7 +262,7 @@ docker run --rm -it \
   -v /home/crypto/tftp:/data \
   -v /home/crypto/container.tftpgui_config.json:/app/.tftpgui_config.json:ro \
   -v /home/crypto/tftpgui/logs:/logs \
-  rjsears/tftpgui:1.1.5
+  rjsears/tftpgui:1.1.6
 ```
 
 This maps **UDP port 69** and an ephemeral range (`50000–50100`) that the server uses for data transfers.
@@ -279,7 +281,7 @@ services:
   # -------------------------------------------------------------
   tftpgui:
     # Use the published image, or uncomment "build" to build locally
-    image: rjsears/tftpgui:1.1.5
+    image: rjsears/tftpgui:1.1.6
     # build:
     #   context: .
     #   dockerfile: Dockerfile
@@ -315,7 +317,7 @@ services:
   # -------------------------------------------------------------
   tftpgui-host:
     # Use the same image
-    image: rjsears/tftpgui:1.1.5
+    image: rjsears/tftpgui:1.1.6
     # build:
     #   context: .
     #   dockerfile: Dockerfile
