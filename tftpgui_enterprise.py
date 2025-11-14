@@ -47,19 +47,34 @@ try:
     from fastapi import FastAPI
     from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
     import uvicorn
-except Exception:  # pragma: no cover
+except ImportError as e:  # pragma: no cover
     FastAPI = None  # type: ignore
     uvicorn = None  # type: ignore
+    import sys
+    print(f"Warning: Web UI dependencies not available ({e}). Install with: pip3 install 'fastapi>=0.104.0' 'uvicorn[standard]>=0.24.0'", file=sys.stderr)
+except Exception as e:  # pragma: no cover
+    FastAPI = None  # type: ignore
+    uvicorn = None  # type: ignore
+    import sys
+    print(f"Warning: Unexpected error loading web dependencies: {e}", file=sys.stderr)
 
 # ---------- Optional GUI (Tk) ----------
 try:
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
     from tkinter.scrolledtext import ScrolledText
-except Exception:  # pragma: no cover
+except ImportError as e:  # pragma: no cover
     tk = None  # type: ignore
     ttk = None  # type: ignore
     ScrolledText = None  # type: ignore
+    import sys
+    print(f"Warning: GUI (tkinter) not available ({e}). Install with: apt-get install python3-tk (Debian/Ubuntu)", file=sys.stderr)
+except Exception as e:  # pragma: no cover
+    tk = None  # type: ignore
+    ttk = None  # type: ignore
+    ScrolledText = None  # type: ignore
+    import sys
+    print(f"Warning: Unexpected error loading GUI dependencies: {e}", file=sys.stderr)
 
 # ---------- TFTP constants ----------
 TFTP_PORT_DEFAULT = 69
@@ -240,10 +255,38 @@ def resolve_config_path(cli_override: Optional[str] = None) -> Path:
 
 
 def load_config(path: Path) -> ServerConfig:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    cfg = ServerConfig.from_json(data)
-    cfg.config_file = path
-    return cfg
+    """Load and parse server configuration from a JSON file.
+
+    Args:
+        path: Path to the JSON configuration file
+
+    Returns:
+        Parsed ServerConfig object
+
+    Raises:
+        FileNotFoundError: If config file doesn't exist
+        json.JSONDecodeError: If config file is not valid JSON
+        ValueError: If config contains invalid values
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as e:
+        raise FileNotFoundError(f"Configuration file not found: {path}") from e
+    except json.JSONDecodeError as e:
+        raise json.JSONDecodeError(
+            f"Invalid JSON in configuration file {path}: {e.msg}",
+            e.doc,
+            e.pos
+        ) from e
+    except (OSError, PermissionError) as e:
+        raise OSError(f"Cannot read configuration file {path}: {e}") from e
+
+    try:
+        cfg = ServerConfig.from_json(data)
+        cfg.config_file = path
+        return cfg
+    except (ValueError, TypeError, KeyError) as e:
+        raise ValueError(f"Invalid configuration in {path}: {e}") from e
 
 
 def save_config(cfg: ServerConfig) -> None:
@@ -304,6 +347,15 @@ def ip_in_list(ip: str, patterns: List[str]) -> bool:
 
 
 def parse_null_fields(data: bytes, start: int = 2) -> List[str]:
+    """Parse null-terminated fields from TFTP packet data.
+
+    Args:
+        data: Raw packet bytes
+        start: Starting offset in the data
+
+    Returns:
+        List of decoded string fields
+    """
     parts = data[start:].split(b"\x00")
     out: List[str] = []
     for bval in parts:
@@ -311,7 +363,10 @@ def parse_null_fields(data: bytes, start: int = 2) -> List[str]:
             continue
         try:
             out.append(bval.decode(errors="ignore"))
-        except Exception:
+        except (UnicodeDecodeError, AttributeError) as e:
+            # Log the specific error but continue processing
+            import logging
+            logging.getLogger("tftpgui").debug(f"Failed to decode field in TFTP packet: {e}")
             out.append("")
     return out
 
@@ -364,27 +419,73 @@ def fmt_eta(seconds: Optional[float]) -> str:
 
 
 def file_hashes(path: Path) -> Dict[str, str]:
-    md5 = hashlib.md5()
-    sha256 = hashlib.sha256()
-    with path.open("rb") as fobj:
-        for chunk in iter(lambda: fobj.read(1024 * 1024), b""):
-            md5.update(chunk)
-            sha256.update(chunk)
-    return {"md5": md5.hexdigest(), "sha256": sha256.hexdigest()}
+    """Calculate MD5 and SHA256 hashes for a file.
+
+    Args:
+        path: Path to the file
+
+    Returns:
+        Dictionary with 'md5' and 'sha256' keys
+
+    Raises:
+        OSError: If file cannot be read
+        PermissionError: If file cannot be accessed
+    """
+    try:
+        md5 = hashlib.md5()
+        sha256 = hashlib.sha256()
+        with path.open("rb") as fobj:
+            for chunk in iter(lambda: fobj.read(1024 * 1024), b""):
+                md5.update(chunk)
+                sha256.update(chunk)
+        return {"md5": md5.hexdigest(), "sha256": sha256.hexdigest()}
+    except (OSError, PermissionError) as e:
+        import logging
+        logging.getLogger("tftpgui").error(f"Failed to calculate hashes for {path}: {e}")
+        raise
+    except Exception as e:
+        import logging
+        logging.getLogger("tftpgui").error(f"Unexpected error calculating hashes for {path}: {e}")
+        raise
 
 
 def write_audit(audit_path: Optional[Path], record: dict) -> None:
+    """Write an audit record to the JSONL audit log file.
+
+    Args:
+        audit_path: Path to audit log file, or None to skip
+        record: Dictionary to write as JSON line
+
+    Note:
+        Errors are logged but do not raise exceptions to avoid disrupting transfers
+    """
     if not audit_path:
         return
     try:
         audit_path.parent.mkdir(parents=True, exist_ok=True)
         with audit_path.open("a", encoding="utf-8") as fobj:
             fobj.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
+    except (OSError, PermissionError) as e:
+        import logging
+        logging.getLogger("tftpgui").warning(f"Failed to write audit log to {audit_path}: {e}")
+    except (TypeError, ValueError) as e:
+        import logging
+        logging.getLogger("tftpgui").warning(f"Failed to serialize audit record: {e}")
+    except Exception as e:
+        import logging
+        logging.getLogger("tftpgui").warning(f"Unexpected error writing audit log: {e}")
 
 
 def write_transfer_log_csv(path: Optional[Path], row: Dict[str, object]) -> None:
+    """Write a transfer record to the CSV transfer log file.
+
+    Args:
+        path: Path to CSV log file, or None to skip
+        row: Dictionary of transfer data to write
+
+    Note:
+        Errors are logged but do not raise exceptions to avoid disrupting transfers
+    """
     if not path:
         return
     try:
@@ -414,8 +515,15 @@ def write_transfer_log_csv(path: Optional[Path], row: Dict[str, object]) -> None
             if not exists:
                 writer.writeheader()
             writer.writerow(row)
-    except Exception:
-        pass
+    except (OSError, PermissionError) as e:
+        import logging
+        logging.getLogger("tftpgui").warning(f"Failed to write transfer CSV log to {path}: {e}")
+    except (csv.Error, ValueError) as e:
+        import logging
+        logging.getLogger("tftpgui").warning(f"Failed to write CSV row: {e}")
+    except Exception as e:
+        import logging
+        logging.getLogger("tftpgui").warning(f"Unexpected error writing transfer CSV log: {e}")
 @dataclass
 class Session:
     client: Tuple[str, int]
@@ -674,17 +782,28 @@ class ListenerProtocol(asyncio.DatagramProtocol):
             self._send_error(addr, ERR_ACCESS_VIOLATION, "Access denied (denylist)")
             return
 
+        # Parse opcode from packet
         try:
             opcode = struct.unpack("!H", data[:2])[0]
-        except Exception:
+        except struct.error as e:
+            self.logger.debug(f"Invalid TFTP packet from {addr}: cannot unpack opcode: {e}")
+            return
+        except Exception as e:
+            self.logger.warning(f"Unexpected error parsing TFTP packet from {addr}: {e}")
             return
 
         if opcode not in (OP_RRQ, OP_WRQ):
             return
 
+        # Parse request with options
         try:
             opcode, filename, mode, options = parse_rrq_wrq_with_options(data)
-        except Exception:
+        except ValueError as e:
+            self.logger.warning(f"Malformed RRQ/WRQ from {addr}: {e}")
+            self._send_error(addr, ERR_ILLEGAL_OPERATION, "Malformed RRQ/WRQ")
+            return
+        except Exception as e:
+            self.logger.error(f"Unexpected error parsing RRQ/WRQ from {addr}: {e}")
             self._send_error(addr, ERR_ILLEGAL_OPERATION, "Malformed RRQ/WRQ")
             return
 
@@ -714,12 +833,22 @@ class ListenerProtocol(asyncio.DatagramProtocol):
 
         if opcode == OP_RRQ:  # DOWNLOAD
             if not path.exists() or not path.is_file():
+                self.logger.info(f"File not found for RRQ from {addr}: {filename}")
                 self._send_error(addr, ERR_FILE_NOT_FOUND, "File not found")
                 return
             try:
                 fh = path.open("rb")
                 total = path.stat().st_size
-            except Exception:
+            except PermissionError as e:
+                self.logger.warning(f"Permission denied reading {path} for {addr}: {e}")
+                self._send_error(addr, ERR_ACCESS_VIOLATION, "Permission denied")
+                return
+            except OSError as e:
+                self.logger.error(f"Cannot open file {path} for {addr}: {e}")
+                self._send_error(addr, ERR_ACCESS_VIOLATION, "Cannot open file")
+                return
+            except Exception as e:
+                self.logger.error(f"Unexpected error opening {path} for {addr}: {e}")
                 self._send_error(addr, ERR_ACCESS_VIOLATION, "Cannot open file")
                 return
 
@@ -756,13 +885,23 @@ class ListenerProtocol(asyncio.DatagramProtocol):
                     return
 
             if path.exists():
+                self.logger.info(f"File already exists for WRQ from {addr}: {filename}")
                 self._send_error(addr, ERR_FILE_EXISTS, "File exists")
                 return
 
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 fh = path.open("wb")
-            except Exception:
+            except PermissionError as e:
+                self.logger.warning(f"Permission denied creating {path} for {addr}: {e}")
+                self._send_error(addr, ERR_ACCESS_VIOLATION, "Permission denied")
+                return
+            except OSError as e:
+                self.logger.error(f"Cannot create file {path} for {addr}: {e}")
+                self._send_error(addr, ERR_ACCESS_VIOLATION, "Cannot create file")
+                return
+            except Exception as e:
+                self.logger.error(f"Unexpected error creating {path} for {addr}: {e}")
                 self._send_error(addr, ERR_ACCESS_VIOLATION, "Cannot create file")
                 return
 
@@ -778,8 +917,8 @@ class ListenerProtocol(asyncio.DatagramProtocol):
             if want_tsize is not None:
                 try:
                     sess.expect_size = int(want_tsize)
-                except Exception:
-                    pass
+                except (ValueError, TypeError) as e:
+                    self.logger.debug(f"Invalid tsize value '{want_tsize}' from {addr}: {e}")
 
             self.loop.create_task(self._spawn_transfer(sess, options, rrq=False))
 
@@ -797,12 +936,18 @@ class ListenerProtocol(asyncio.DatagramProtocol):
                         local_addr=(host, p),
                     )
                     break
+                except OSError as e:
+                    # Port in use or permission denied - continue trying
+                    last_exc = e
+                    continue
                 except Exception as e:
+                    # Unexpected error - log and continue
+                    self.logger.debug(f"Unexpected error binding to port {p}: {e}")
                     last_exc = e
                     continue
             if transport is None:
-                self.logger.error("No free data port in %s-%s: %s", lo, hi, last_exc)
-                self._send_error(sess.client, ERR_NOT_DEFINED, "No data port")
+                self.logger.error("No free data port in range %s-%s: %s", lo, hi, last_exc)
+                self._send_error(sess.client, ERR_NOT_DEFINED, "No data port available")
                 return
         else:
             local_addr = (host, 0) if self.cfg.ephemeral_ports else (host, self.cfg.port)
@@ -870,13 +1015,21 @@ class TransferProtocol(asyncio.DatagramProtocol):
         self._retransmit_task = self.loop.create_task(self._retransmit_loop())
 
     def connection_lost(self, exc: Optional[Exception]) -> None:
+        """Handle connection closure and cleanup resources."""
+        if exc:
+            self.logger.debug(f"Transfer connection lost for {self.sess.client}: {exc}")
+
         if self._retransmit_task:
             self._retransmit_task.cancel()
+
         try:
             if self.sess.fh:
                 self.sess.fh.close()
-        except Exception:
-            pass
+        except OSError as e:
+            self.logger.warning(f"Error closing file handle for {self.sess.file_path}: {e}")
+        except Exception as e:
+            self.logger.error(f"Unexpected error closing file handle: {e}")
+
         self.sess.complete = True
 
     async def _retransmit_loop(self) -> None:
@@ -899,12 +1052,18 @@ class TransferProtocol(asyncio.DatagramProtocol):
             return
 
     def datagram_received(self, data: bytes, addr: Tuple[str, int]) -> None:
+        """Handle incoming TFTP packets during an active transfer."""
         if addr != self.sess.client:
             self._sendto(build_error(ERR_UNKNOWN_TID, "Unknown transfer ID"), addr)
             return
+
         try:
             opcode = struct.unpack("!H", data[:2])[0]
-        except Exception:
+        except struct.error as e:
+            self.logger.debug(f"Invalid packet from {addr}: cannot unpack opcode: {e}")
+            return
+        except Exception as e:
+            self.logger.warning(f"Unexpected error parsing packet from {addr}: {e}")
             return
 
         if opcode == OP_ACK:
@@ -912,6 +1071,7 @@ class TransferProtocol(asyncio.DatagramProtocol):
         elif opcode == OP_DATA:
             self._on_data(data)
         else:
+            self.logger.debug(f"Invalid opcode {opcode} from {addr}")
             self._sendto(build_error(ERR_ILLEGAL_OPERATION, "Illegal TFTP operation"), addr)
 
     # --- Initiators ---
@@ -929,10 +1089,15 @@ class TransferProtocol(asyncio.DatagramProtocol):
 
     # --- Handlers ---
     def _on_ack(self, data: bytes) -> None:
+        """Handle ACK packet during download."""
         s = self.sess
         try:
             _, block_no = struct.unpack("!HH", data[:4])
-        except Exception:
+        except struct.error as e:
+            self.logger.debug(f"Invalid ACK packet from {s.client}: {e}")
+            return
+        except Exception as e:
+            self.logger.warning(f"Unexpected error parsing ACK from {s.client}: {e}")
             return
 
         # First ACK after OACK
@@ -960,23 +1125,39 @@ class TransferProtocol(asyncio.DatagramProtocol):
                 self._end_session()
 
     def _on_data(self, data: bytes) -> None:
+        """Handle DATA packet during upload."""
         s = self.sess
         if not s.is_write:
             return
+
         try:
             _, block_no = struct.unpack("!HH", data[:4])
             payload = data[4:]
-        except Exception:
+        except struct.error as e:
+            self.logger.debug(f"Invalid DATA packet from {s.client}: {e}")
+            return
+        except Exception as e:
+            self.logger.warning(f"Unexpected error parsing DATA from {s.client}: {e}")
             return
 
         if not s.fh:
+            self.logger.error(f"No file handle for DATA packet from {s.client}")
             return
+
         try:
             s.fh.write(payload)
             s.fh.flush()
-        except Exception:
-            self._sendto(build_error(ERR_DISK_FULL, "Disk full or allocation exceeded"), s.client)
-            self._emit_event("error", "Disk full or write error")
+        except OSError as e:
+            # Disk full, quota exceeded, or permission error
+            self.logger.error(f"Write error for {s.file_path}: {e}")
+            self._sendto(build_error(ERR_DISK_FULL, "Disk full or write error"), s.client)
+            self._emit_event("error", f"Write error: {e}")
+            self._end_session()
+            return
+        except Exception as e:
+            self.logger.error(f"Unexpected error writing to {s.file_path}: {e}")
+            self._sendto(build_error(ERR_DISK_FULL, "Write error"), s.client)
+            self._emit_event("error", f"Write error: {e}")
             self._end_session()
             return
 
@@ -1026,12 +1207,16 @@ class TransferProtocol(asyncio.DatagramProtocol):
             self.transport.sendto(payload, addr)
 
     def _end_session(self) -> None:
+        """Clean up and close the transfer session."""
         s = self.sess
         try:
             if s.fh:
                 s.fh.close()
-        except Exception:
-            pass
+        except OSError as e:
+            self.logger.warning(f"Error closing file {s.file_path}: {e}")
+        except Exception as e:
+            self.logger.error(f"Unexpected error closing file handle: {e}")
+
         s.complete = True
         if self.transport is not None:
             self.transport.close()
@@ -1118,11 +1303,21 @@ class TransferProtocol(asyncio.DatagramProtocol):
 # ---------------------------------------------------------------------------
 
 class TextHandler(logging.Handler):
+    """Custom logging handler that writes to a Tkinter ScrolledText widget."""
+
     def __init__(self, widget: ScrolledText):
         super().__init__()
         self.widget = widget
 
     def emit(self, self_record: logging.LogRecord) -> None:
+        """Write a log record to the text widget.
+
+        Args:
+            self_record: The logging record to emit
+
+        Note:
+            Errors are silently ignored to avoid disrupting logging
+        """
         try:
             if not self.widget or not self.widget.winfo_exists():
                 return
@@ -1131,7 +1326,15 @@ class TextHandler(logging.Handler):
             self.widget.insert("end", msg + "\n")
             self.widget.configure(state="disabled")
             self.widget.yview_moveto(1.0)
-        except Exception:
+        except tk.TclError as e:
+            # Widget destroyed or Tcl error - stop trying
+            import sys
+            print(f"GUI logging disabled due to widget error: {e}", file=sys.stderr)
+            return
+        except Exception as e:
+            # Unexpected error - log to stderr and continue
+            import sys
+            print(f"Error writing to GUI log widget: {e}", file=sys.stderr)
             return
 
 
@@ -1207,15 +1410,25 @@ class TFTPApp(_TkBase):  # type: ignore
                     )
                     self.web_thread.start()
                     print(f"Web UI starting on {web_host}:{web_port}")
+                    self.logger.info(f"Web UI started on {web_host}:{web_port}")
                 else:
                     print("Web UI requested but uvicorn not installed.")
+                    self.logger.warning("Web UI requested but uvicorn not available")
+            except OSError as e:
+                print(f"Web UI failed to start (port in use or permission denied): {e}")
+                self.logger.error(f"Web UI failed to start on {web_host}:{web_port}: {e}")
+            except (ValueError, TypeError) as e:
+                print(f"Web UI configuration error: {e}")
+                self.logger.error(f"Web UI configuration error: {e}")
             except Exception as e:
                 print(f"Web UI failed to start: {e}")
+                self.logger.error(f"Unexpected error starting web UI: {e}")
                 import traceback
                 traceback.print_exc()
         elif self._start_web and FastAPI is None:
             print("Web UI requested but FastAPI/uvicorn not installed.")
             print("Install with: pip3 install 'fastapi>=0.104.0' 'uvicorn[standard]>=0.24.0'")
+            self.logger.warning("Web UI requested but FastAPI/uvicorn not available")
 
     # ---- Menus --------------------------------------------------------------
 
@@ -1235,6 +1448,7 @@ class TFTPApp(_TkBase):  # type: ignore
         self.config(menu=menubar)
 
     def _show_about(self) -> None:
+        """Display the About dialog."""
         try:
             messagebox.showinfo(
                 "About TFTP Server",
@@ -1245,8 +1459,14 @@ class TFTPApp(_TkBase):  # type: ignore
                     "https://github.com/rjsears/tftpgui"
                 ),
             )
-        except Exception:
+        except tk.TclError as e:
+            # GUI not available, print to console
             print(f"TFTP Server Python3 - Version {VERSION} - Author: {__author__}")
+            self.logger.debug(f"Cannot show about dialog: {e}")
+        except Exception as e:
+            # Unexpected error
+            print(f"TFTP Server Python3 - Version {VERSION} - Author: {__author__}")
+            self.logger.warning(f"Error showing about dialog: {e}")
 
     # ---- Logging wiring -----------------------------------------------------
 
@@ -1428,10 +1648,18 @@ class TFTPApp(_TkBase):  # type: ignore
 
     # ------- Banner helpers -------
     def _set_banner(self, text: str, bg: str) -> None:
+        """Update the status banner display.
+
+        Args:
+            text: Banner text to display
+            bg: Background color
+        """
         try:
             self.banner_label.config(text=text, bg=bg)
-        except Exception:
-            pass
+        except tk.TclError as e:
+            self.logger.debug(f"Cannot update banner (GUI destroyed?): {e}")
+        except Exception as e:
+            self.logger.warning(f"Unexpected error updating banner: {e}")
 
     def _update_banner(self) -> None:
         try:
@@ -1502,47 +1730,62 @@ class TFTPApp(_TkBase):  # type: ignore
 
     # ------- Window actions -------
     def on_close(self) -> None:
+        """Handle window close event and clean up all resources."""
         self._closing = True
+
+        # Cancel any pending GUI updates
         try:
             if self._poll_after_id:
                 self.after_cancel(self._poll_after_id)
-        except Exception:
-            pass
+        except tk.TclError as e:
+            self.logger.debug(f"Cannot cancel polling (GUI destroyed?): {e}")
+        except Exception as e:
+            self.logger.warning(f"Error canceling polling: {e}")
+
+        # Stop TFTP server
         try:
-            # Stop TFTP server and wait for thread to finish
             self.server_thread.stop(wait=True, timeout=3.0)
             self.running = False
             self.status.set("Stopped")
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.error(f"Error stopping TFTP server: {e}")
+
+        # Stop web server if running
         try:
-            # Stop web server if running
             if self.web_server is not None:
                 self.web_server.should_exit = True
                 if self.web_thread and self.web_thread.is_alive():
                     self.web_thread.join(timeout=2.0)
-                    # If still alive after timeout, force exit
                     if self.web_thread.is_alive():
                         self.logger.warning("Web server did not stop gracefully, forcing exit")
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.error(f"Error stopping web server: {e}")
+
+        # Destroy GUI
         try:
             self.destroy()
-        except Exception:
-            pass
+        except tk.TclError as e:
+            self.logger.debug(f"Cannot destroy GUI (already destroyed?): {e}")
+        except Exception as e:
+            self.logger.error(f"Error destroying GUI: {e}")
 
-        # Force exit if we get here - ensures process terminates
-        # even if some threads are still finishing cleanup
+        # Force exit - ensures process terminates even if threads are still cleaning up
         # Use os._exit() which is more forceful than sys.exit()
         import os
         os._exit(0)
 
     # ------- UI helpers -------
     def _open_config(self) -> None:
+        """Show information about the config file location."""
         try:
             messagebox.showinfo("Config File", f"Edit this file and set a valid 'root_dir':\n\n{self.cfg.config_file}")
-        except Exception:
+        except tk.TclError as e:
+            # GUI not available
             print(f"Edit this file and set a valid 'root_dir': {self.cfg.config_file}")
+            self.logger.debug(f"Cannot show config dialog: {e}")
+        except Exception as e:
+            print(f"Edit this file and set a valid 'root_dir': {self.cfg.config_file}")
+            self.logger.warning(f"Error showing config dialog: {e}")
 
     def _choose_logfile(self) -> None:
         path = filedialog.asksaveasfilename(defaultextension=".log", initialfile="tftpgui.log")
@@ -1609,24 +1852,29 @@ class TFTPApp(_TkBase):  # type: ignore
             self._update_buttons()
 
     def _update_buttons(self) -> None:
+        """Update the enabled/disabled state of start/stop buttons."""
         try:
             valid = False
             try:
                 validate_root_dir(self.cfg)
                 valid = True
-            except Exception:
+            except (ValueError, OSError):
                 valid = False
 
             if self._closing:
                 return
+
             if self.running:
                 self.start_btn.config(state="disabled")
                 self.stop_btn.config(state="normal")
             else:
                 self.start_btn.config(state="normal" if valid else "disabled")
                 self.stop_btn.config(state="disabled")
-        except Exception:
-            pass
+        except tk.TclError as e:
+            # GUI destroyed
+            self.logger.debug(f"Cannot update buttons (GUI destroyed?): {e}")
+        except Exception as e:
+            self.logger.warning(f"Unexpected error updating buttons: {e}")
 
     def _load_config_file(self) -> None:
         try:
@@ -2013,20 +2261,32 @@ def main() -> None:
         if start_web and FastAPI is not None:
             try:
                 app_web = create_web_app(cfg, fanout, server)
+                web_host = str(cfg.web.get("host", "0.0.0.0"))
+                web_port = int(cfg.web.get("port", 8080))
+
                 threading.Thread(
                     target=run_web,
-                    args=(app_web, str(cfg.web.get("host", "0.0.0.0")), int(cfg.web.get("port", 8080))),
+                    args=(app_web, web_host, web_port),
                     name="TFTP-Web",
                     daemon=True,
                 ).start()
-                print(f"Web UI starting on {cfg.web.get('host', '0.0.0.0')}:{cfg.web.get('port', 8080)}")
+                print(f"Web UI starting on {web_host}:{web_port}")
+                logger.info(f"Web UI started on {web_host}:{web_port}")
+            except OSError as e:
+                print(f"Web UI failed to start (port in use or permission denied): {e}")
+                logger.error(f"Web UI failed to start: {e}")
+            except (ValueError, TypeError) as e:
+                print(f"Web UI configuration error: {e}")
+                logger.error(f"Web UI configuration error: {e}")
             except Exception as e:
                 print(f"Web UI failed to start: {e}")
+                logger.error(f"Unexpected error starting web UI: {e}")
                 import traceback
                 traceback.print_exc()
         elif start_web and FastAPI is None:
             print("Web UI requested but FastAPI/uvicorn not installed.")
             print("Install with: pip3 install 'fastapi>=0.104.0' 'uvicorn[standard]>=0.24.0'")
+            logger.warning("Web UI requested but FastAPI/uvicorn not available")
 
         print(f"TFTP server running with config: {cfg.config_file}. Press Ctrl+C to stop.")
         try:
